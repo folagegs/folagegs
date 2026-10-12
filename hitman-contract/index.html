@@ -36,12 +36,14 @@
 
   .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 20; color: var(--text-dim); font-size: 13px; letter-spacing: 1px; }
 
-  .hud { position: absolute; top: 0; left: 0; right: 0; padding: 16px 18px; display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; z-index: 5; display: none; }
+  .hud { position: absolute; top: 0; left: 0; right: 0; padding: 16px 18px; display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; z-index: 9; display: none; }
   .cash-pill { display: flex; align-items: center; gap: 6px; background: rgba(10,8,18,0.55); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; padding: 7px 14px 7px 8px; }
   .cash-icon { width: 18px; height: 18px; border-radius: 50%; background: var(--gold); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 900; color: #0a2f16; }
   .cash-val { font-weight: 800; font-size: 15px; }
   .contract-pill { background: rgba(10,8,18,0.55); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; padding: 7px 16px; font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-align: center; }
   .contract-pill .room { display: block; font-size: 10px; color: var(--text-dim); font-weight: 600; margin-top: 2px; }
+  .mute-btn { pointer-events: auto; width: 32px; height: 32px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.12); background: rgba(10,8,18,0.55); color: var(--text); font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .mute-btn.off { opacity: 0.45; }
   .hp-wrap { display: flex; align-items: center; gap: 6px; background: rgba(10,8,18,0.55); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; padding: 7px 12px; margin-top: 7px; }
   .hp-bar { width: 84px; height: 9px; border-radius: 5px; background: rgba(255,255,255,0.12); overflow: hidden; }
   .hp-fill { height: 100%; background: linear-gradient(90deg,#ff4d6d,#ff8a3d); transition: width 0.2s; }
@@ -113,7 +115,10 @@
         <div class="cash-pill"><div class="cash-icon">$</div><div class="cash-val" id="cashVal">0</div></div>
         <div class="hp-wrap"><div class="hp-icon">❤️</div><div class="hp-bar"><div class="hp-fill" id="hpFill" style="width:100%;"></div></div></div>
       </div>
-      <div class="contract-pill">CONTRACT <span id="contractNum">1</span><span class="room" id="roomVal">Room 1/3</span></div>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:7px;">
+        <div class="contract-pill">CONTRACT <span id="contractNum">1</span><span class="room" id="roomVal">Room 1/3</span></div>
+        <button id="muteBtn" class="mute-btn">🔊</button>
+      </div>
     </div>
 
     <div class="controls" id="controls">
@@ -189,6 +194,7 @@
   var joyBase = document.getElementById("joyBase");
   var joyKnob = document.getElementById("joyKnob");
   var jumpBtn = document.getElementById("jumpBtn");
+  var muteBtn = document.getElementById("muteBtn");
 
   var titleOverlay = document.getElementById("titleOverlay");
   var heroesOverlay = document.getElementById("heroesOverlay");
@@ -216,6 +222,111 @@
     loadingEl.textContent = "Couldn't load the 3D engine. Check your connection and reload.";
     return;
   }
+
+  // ================= Sound (synthesized, no asset files) =================
+  var SFX = (function () {
+    var ctx = null;
+    var muted = false;
+    try { muted = localStorage.getItem("hitmanContractMuted") === "1"; } catch (e) {}
+    var musicActive = false, musicTimer = null, musicStep = 0;
+    var musicPattern = [55, 55, 65.41, 55, 49, 55, 61.74, 55];
+
+    function ensureCtx() {
+      if (!ctx) {
+        try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+      }
+      if (ctx.state === "suspended") { try { ctx.resume(); } catch (e) {} }
+      return ctx;
+    }
+    function now() { return ctx ? ctx.currentTime : 0; }
+    function envelope(duration, peak, attack) {
+      var g = ctx.createGain();
+      var t = now();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(peak, t + (attack || 0.004));
+      g.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+      return g;
+    }
+    function tone(freq, duration, type, peak) {
+      if (muted || !ensureCtx()) return;
+      var osc = ctx.createOscillator();
+      osc.type = type || "square";
+      osc.frequency.setValueAtTime(freq, now());
+      var g = envelope(duration, peak || 0.22);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(); osc.stop(now() + duration + 0.05);
+    }
+    function sweep(freqStart, freqEnd, duration, type, peak) {
+      if (muted || !ensureCtx()) return;
+      var osc = ctx.createOscillator();
+      osc.type = type || "sine";
+      var t = now();
+      osc.frequency.setValueAtTime(freqStart, t);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), t + duration);
+      var g = envelope(duration, peak || 0.22);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(); osc.stop(t + duration + 0.05);
+    }
+    function noiseBurst(duration, filterFreq, peak) {
+      if (muted || !ensureCtx()) return;
+      var size = Math.max(1, Math.floor(ctx.sampleRate * duration));
+      var buffer = ctx.createBuffer(1, size, ctx.sampleRate);
+      var data = buffer.getChannelData(0);
+      for (var i = 0; i < size; i++) data[i] = Math.random() * 2 - 1;
+      var src = ctx.createBufferSource();
+      src.buffer = buffer;
+      var filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = filterFreq || 2000;
+      var g = envelope(duration, peak || 0.3, 0.002);
+      src.connect(filter); filter.connect(g); g.connect(ctx.destination);
+      src.start();
+    }
+    function scheduleMusicStep() {
+      if (!musicActive) return;
+      if (!muted && ensureCtx()) tone(musicPattern[musicStep % musicPattern.length], 0.22, "sawtooth", 0.05);
+      musicStep++;
+      musicTimer = setTimeout(scheduleMusicStep, 280);
+    }
+
+    return {
+      init: ensureCtx,
+      isMuted: function () { return muted; },
+      toggleMute: function () {
+        muted = !muted;
+        try { localStorage.setItem("hitmanContractMuted", muted ? "1" : "0"); } catch (e) {}
+        return muted;
+      },
+      startMusic: function () { if (musicActive) return; musicActive = true; musicStep = 0; ensureCtx(); scheduleMusicStep(); },
+      stopMusic: function () { musicActive = false; if (musicTimer) clearTimeout(musicTimer); },
+      katana: function () { noiseBurst(0.08, 3500, 0.22); sweep(900, 280, 0.08, "triangle", 0.16); },
+      pistol: function () { noiseBurst(0.07, 2600, 0.3); tone(170, 0.05, "square", 0.16); },
+      shotgun: function () { noiseBurst(0.15, 1300, 0.42); tone(85, 0.1, "square", 0.22); },
+      ak47: function () { noiseBurst(0.055, 2800, 0.26); },
+      minigun: function () { noiseBurst(0.035, 3200, 0.17); },
+      rpgFire: function () { sweep(220, 600, 0.3, "sawtooth", 0.2); },
+      explosion: function () { noiseBurst(0.55, 650, 0.5); sweep(260, 40, 0.5, "sine", 0.3); },
+      enemyHit: function () { tone(220, 0.07, "square", 0.12); },
+      kill: function () { sweep(520, 140, 0.14, "triangle", 0.2); },
+      playerHit: function () { sweep(260, 70, 0.22, "sawtooth", 0.26); },
+      jump: function () { sweep(300, 760, 0.18, "sine", 0.16); },
+      land: function () { tone(130, 0.06, "square", 0.1); },
+      coin: function () { tone(1200, 0.07, "square", 0.14); setTimeout(function () { tone(1600, 0.09, "square", 0.14); }, 55); },
+      click: function () { tone(700, 0.04, "square", 0.1); },
+      win: function () { [660, 880, 1100].forEach(function (f, i) { setTimeout(function () { tone(f, 0.16, "triangle", 0.2); }, i * 110); }); },
+      lose: function () { sweep(300, 70, 0.5, "sawtooth", 0.25); }
+    };
+  })();
+
+  function syncMuteBtn() { muteBtn.textContent = SFX.isMuted() ? "🔇" : "🔊"; muteBtn.classList.toggle("off", SFX.isMuted()); }
+  syncMuteBtn();
+  muteBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    SFX.init();
+    var nowMuted = SFX.toggleMute();
+    syncMuteBtn();
+    if (!nowMuted) SFX.click();
+  });
 
   // ================= Data =================
   var WEAPONS = [
@@ -270,6 +381,7 @@
     heroGrid.innerHTML = html;
     heroGrid.querySelectorAll(".hero-card").forEach(function (b) {
       b.addEventListener("click", function () {
+        SFX.click();
         heroIndex = parseInt(b.getAttribute("data-i"), 10);
         saveMeta();
         buildHeroGrid();
@@ -294,6 +406,7 @@
     equipGrid.innerHTML = html;
     equipGrid.querySelectorAll(".weapon-card:not([disabled])").forEach(function (b) {
       b.addEventListener("click", function () {
+        SFX.click();
         selectedWeapon = b.getAttribute("data-key");
         buildEquipGrid();
       });
@@ -317,18 +430,19 @@
     showOverlay(equipOverlay);
   }
 
-  playBtn.addEventListener("click", openEquip);
-  heroesBtn.addEventListener("click", openHeroes);
-  heroesBackBtn.addEventListener("click", openTitle);
-  equipBackBtn.addEventListener("click", openTitle);
+  playBtn.addEventListener("click", function () { SFX.init(); SFX.click(); openEquip(); });
+  heroesBtn.addEventListener("click", function () { SFX.click(); openHeroes(); });
+  heroesBackBtn.addEventListener("click", function () { SFX.click(); openTitle(); });
+  equipBackBtn.addEventListener("click", function () { SFX.click(); openTitle(); });
   continueBtn.addEventListener("click", function () {
     var w = WEAPONS.filter(function (x) { return x.key === selectedWeapon; })[0];
     if (cash < w.cost) return;
+    SFX.click();
     cash -= w.cost;
     saveMeta();
     startRun(w);
   });
-  homeBtn.addEventListener("click", openTitle);
+  homeBtn.addEventListener("click", function () { SFX.click(); openTitle(); });
 
   // ================= Three.js setup =================
   var W = 0, H = 0, DPR = 1;
@@ -846,6 +960,7 @@
     showOverlay(titleOverlay); titleOverlay.classList.add("hidden");
     hud.style.display = "flex"; controlsEl.style.display = "block";
     clock.getDelta();
+    SFX.startMusic();
     requestAnimationFrame(loop);
   }
 
@@ -938,6 +1053,7 @@
     updateHpBar();
     flashHit();
     shakeT = 0.26;
+    SFX.playerHit();
     popupText(player.x, 1.6, player.z, "-" + dmg, "#ff4d6d");
     spawnParticles(player.x, 1, player.z, 0xff4d6d, 10);
     if (player.hp <= 0) endRun(false);
@@ -952,6 +1068,7 @@
     runCashEarned += reward;
     cash += reward;
     cashVal.textContent = cash;
+    SFX.kill();
     popupText(e.x, 1.4, e.z, "+" + reward, "#4ade80");
     spawnParticles(e.x, 1, e.z, 0x3a3a52, 12);
     spawnCash(e.x, e.z, reward);
@@ -970,13 +1087,15 @@
     if (missionEnded) return;
     missionEnded = true;
     state = won ? "won" : "dead";
+    SFX.stopMusic();
+    if (won) SFX.win(); else SFX.lose();
     setTimeout(function () {
       if (won) { contractNumber++; saveMeta(); }
       resultLabel.textContent = won ? "Contract Complete" : "Contract Failed";
       resultCash.textContent = "+" + runCashEarned;
       resultBalance.textContent = "Balance: " + cash;
       primaryBtn.textContent = won ? "NEXT CONTRACT" : "RETRY CONTRACT";
-      primaryBtn.onclick = won ? openEquipNext : function () { startRun(player.weapon); };
+      primaryBtn.onclick = won ? function () { SFX.click(); openEquipNext(); } : function () { SFX.click(); startRun(player.weapon); };
       showOverlay(resultOverlay);
       hud.style.display = "none"; controlsEl.style.display = "none";
     }, won ? 350 : 420);
@@ -986,7 +1105,7 @@
   // ---------- Input ----------
   var keys = {};
   function tryJump() {
-    if (state === "playing" && !player.jumping) { player.jumping = true; player.jumpT = 0; }
+    if (state === "playing" && !player.jumping) { player.jumping = true; player.jumpT = 0; SFX.jump(); }
   }
   window.addEventListener("keydown", function (e) {
     keys[e.key.toLowerCase()] = true;
@@ -1080,7 +1199,7 @@
     var jumpY = 0;
     if (player.jumping) {
       player.jumpT += dt;
-      if (player.jumpT >= JUMP_DURATION) { player.jumping = false; player.jumpT = 0; }
+      if (player.jumpT >= JUMP_DURATION) { player.jumping = false; player.jumpT = 0; SFX.land(); }
       else jumpY = Math.sin((player.jumpT / JUMP_DURATION) * Math.PI) * JUMP_HEIGHT;
     }
 
@@ -1236,6 +1355,7 @@
       var pd = Math.hypot(cp.x - player.x, cp.z - player.z);
       if (pd < 0.9) {
         cash += cp.value; runCashEarned += cp.value; cashVal.textContent = cash;
+        SFX.coin();
         fxGroup.remove(cp.mesh);
         cashPickups.splice(i, 1);
       }
@@ -1292,13 +1412,16 @@
     projectiles.push({ mesh: mesh, x: origin.x, z: origin.z, target: target, dirX: dx / dd, dirZ: dz / dd, speed: weapon.projSpeed, t: 0, weapon: weapon });
   }
 
+  var WEAPON_SFX = { katana: "katana", pistol: "pistol", shotgun: "shotgun", ak47: "ak47", minigun: "minigun", rpg: "rpgFire" };
   function fireWeapon(target) {
     var weapon = player.weapon;
     var origin = { x: player.x + Math.sin(player.facing) * 0.3, y: 0.9, z: player.z + Math.cos(player.facing) * 0.3 };
+    var sfxName = WEAPON_SFX[weapon.key];
+    if (sfxName && SFX[sfxName]) SFX[sfxName]();
     if (weapon.kind === "melee") {
       target.hp -= weapon.damage; target.flash = 0.15;
       spawnParticles(target.x, 1, target.z, 0xcf9f78, 5);
-      if (target.hp <= 0) killEnemy(target);
+      if (target.hp <= 0) killEnemy(target); else SFX.enemyHit();
       return;
     }
     spawnMuzzleFlash(origin, player.facing, weapon.kind === "splash" ? 0xff8a4a : 0xffe9a0);
@@ -1321,6 +1444,7 @@
       spawnShockwave(pr.x, pr.z, 0xff6a3d, weapon.splashRadius * 2.2);
       popupText(pr.x, 1.6, pr.z, "BOOM", "#ff6a3d");
       shakeT = Math.max(shakeT, 0.3);
+      SFX.explosion();
       enemies.slice().forEach(function (e) {
         var d = Math.hypot(e.x - pr.x, e.z - pr.z);
         if (d <= weapon.splashRadius) {
@@ -1332,7 +1456,7 @@
       if (pr.target && pr.target.alive) {
         pr.target.hp -= weapon.damage; pr.target.flash = 0.15;
         spawnParticles(pr.x, 1, pr.z, 0xcf9f78, 8);
-        if (pr.target.hp <= 0) killEnemy(pr.target);
+        if (pr.target.hp <= 0) killEnemy(pr.target); else SFX.enemyHit();
       }
     }
   }
