@@ -372,6 +372,7 @@
   // ---- shared geometry ----
   var GEO_BOX = new THREE.BoxGeometry(1, 1, 1);
   var GEO_BOX_TOP = new THREE.BoxGeometry(1, 1, 1); GEO_BOX_TOP.translate(0, -0.5, 0);
+  var GEO_CYL_TOP = new THREE.CylinderGeometry(0.5, 0.5, 1, 9); GEO_CYL_TOP.translate(0, -0.5, 0);
   var GEO_CYL = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
   var GEO_CONE = new THREE.ConeGeometry(0.5, 1, 8);
   var GEO_SPHERE = new THREE.SphereGeometry(0.5, 10, 8);
@@ -409,7 +410,10 @@
   // ---- character rig ----
   function seg(parent, length, width, mat, xOff) {
     var pivot = new THREE.Group(); pivot.position.set(xOff || 0, 0, 0); parent.add(pivot);
-    var mesh = new THREE.Mesh(GEO_BOX_TOP, mat);
+    var joint = new THREE.Mesh(GEO_SPHERE, mat);
+    joint.scale.set(width * 1.08, width * 1.08, width * 0.82 * 1.08);
+    pivot.add(joint);
+    var mesh = new THREE.Mesh(GEO_CYL_TOP, mat);
     mesh.scale.set(width, length, width * 0.82);
     pivot.add(mesh);
     var anchor = new THREE.Group(); anchor.position.set(0, -length, 0); pivot.add(anchor);
@@ -448,9 +452,9 @@
 
     var bob = new THREE.Group(); bob.position.set(0, hipY, 0); root.add(bob);
     var hipW = 0.17 * sc, shoulderW = 0.27 * sc, torsoD = 0.16 * sc;
-    var lowerTorso = new THREE.Mesh(GEO_BOX, outfitMat);
+    var lowerTorso = new THREE.Mesh(GEO_CYL, outfitMat);
     lowerTorso.scale.set(hipW, shoulderOff * 0.4, torsoD); lowerTorso.position.set(0, shoulderOff * 0.2, 0); bob.add(lowerTorso);
-    var upperTorso = new THREE.Mesh(GEO_BOX, outfitMat);
+    var upperTorso = new THREE.Mesh(GEO_CYL, outfitMat);
     upperTorso.scale.set(shoulderW, shoulderOff * 0.66, torsoD); upperTorso.position.set(0, shoulderOff * 0.63, 0); bob.add(upperTorso);
     var belt = new THREE.Mesh(GEO_BOX, maskMat);
     belt.scale.set(hipW * 1.08, 0.035 * sc, torsoD * 1.08); belt.position.set(0, 0.015 * sc, 0); bob.add(belt);
@@ -460,9 +464,23 @@
     pouch.scale.set(hipW * 0.5, 0.11 * sc, torsoD * 0.5); pouch.position.set(-hipW * 0.25, shoulderOff * 0.26, torsoD * 0.42); bob.add(pouch);
 
     var headGroup = new THREE.Group(); headGroup.position.set(0, shoulderOff + headOff, 0); bob.add(headGroup);
-    var headMesh = new THREE.Mesh(GEO_BOX, skinMat); headMesh.scale.set(headR * 1.7, headR * 1.7, headR * 1.5); headGroup.add(headMesh);
+    var headMesh = new THREE.Mesh(GEO_SPHERE, skinMat); headMesh.scale.set(headR * 1.75, headR * 1.7, headR * 1.55); headGroup.add(headMesh);
+    var jawMesh = new THREE.Mesh(GEO_SPHERE, skinMat); jawMesh.scale.set(headR * 1.35, headR * 1.0, headR * 1.2); jawMesh.position.set(0, -headR * 0.42, headR * 0.12); headGroup.add(jawMesh);
     var maskMesh = new THREE.Mesh(GEO_BOX, maskMat); maskMesh.scale.set(headR * 1.76, headR * 0.5, headR * 1.3); maskMesh.position.set(0, headR * 0.65, 0.02 * sc); headGroup.add(maskMesh);
-    var eyeMesh = new THREE.Mesh(GEO_BOX, eyeMat); eyeMesh.scale.set(headR * 0.9, headR * 0.2, headR * 0.1); eyeMesh.position.set(0, headR * 0.05, headR * 0.82); headGroup.add(eyeMesh);
+    [-1, 1].forEach(function (side) {
+      var eyeWhite = new THREE.Mesh(GEO_SPHERE, eyeMat);
+      eyeWhite.scale.set(headR * 0.26, headR * 0.26, headR * 0.16);
+      eyeWhite.position.set(side * headR * 0.36, headR * 0.05, headR * 0.76);
+      headGroup.add(eyeWhite);
+      var pupil = new THREE.Mesh(GEO_SPHERE, DARK_MAT);
+      pupil.scale.set(headR * 0.1, headR * 0.1, headR * 0.1);
+      pupil.position.set(side * headR * 0.36, headR * 0.05, headR * 0.88);
+      headGroup.add(pupil);
+    });
+    var nose = new THREE.Mesh(GEO_SPHERE, skinMat);
+    nose.scale.set(headR * 0.16, headR * 0.2, headR * 0.16);
+    nose.position.set(0, -headR * 0.14, headR * 0.92);
+    headGroup.add(nose);
     if (accessory === "soldier" || accessory === "rusher" || accessory === "gunner") {
       // combat helmet, shared by every soldier-type enemy, with a type-colored trim band
       var helmet = new THREE.Mesh(GEO_BOX, outfitMat);
@@ -490,6 +508,12 @@
     var foreR = seg(armR.anchor, armLen2, armW2, skinMat, 0);
     var armL = seg(shoulderGroup, armLen1, armW1, outfitMat, -shoulderW * 0.48);
     var foreL = seg(armL.anchor, armLen2, armW2, skinMat, 0);
+    var handL = new THREE.Mesh(GEO_SPHERE, skinMat);
+    handL.scale.set(armW2 * 1.15, armW2 * 1.15, armW2 * 0.95);
+    foreL.anchor.add(handL);
+    var handR = new THREE.Mesh(GEO_SPHERE, skinMat);
+    handR.scale.set(armW2 * 1.15, armW2 * 1.15, armW2 * 0.95);
+    foreR.anchor.add(handR);
 
     var weaponGroup = new THREE.Group(); foreR.anchor.add(weaponGroup);
     buildWeaponMesh(weaponGroup, weaponKey, sc);
@@ -608,7 +632,7 @@
   function updateHpBar() { hpFillEl.style.width = Math.max(0, player.hp / player.maxHp * 100) + "%"; }
   var playerOutfitMat = null, playerSkinMat = null, playerMaskMat = null;
   var camTarget = new THREE.Vector3();
-  var rooms = [], enemies = [], particles = [], projectiles = [], cashPickups = [], enemyShots = [], muzzleFlashes = [], shockwaves = [], obstacles = [], doors = [];
+  var rooms = [], enemies = [], particles = [], projectiles = [], cashPickups = [], enemyShots = [], muzzleFlashes = [], shockwaves = [], obstacles = [], doors = [], wallObstacles = [];
   var config, currentRoomIndex, roomsCleared, levelLength, runCashEarned, missionEnded;
   var clock = new THREE.Clock();
 
@@ -628,6 +652,30 @@
     }
   }
 
+  function resolveWalls(entity, r) {
+    for (var i = 0; i < wallObstacles.length; i++) {
+      var w = wallObstacles[i];
+      var cx = Math.max(w.x0, Math.min(entity.x, w.x1));
+      var cz = Math.max(w.z0, Math.min(entity.z, w.z1));
+      var dx = entity.x - cx, dz = entity.z - cz;
+      var distSq = dx * dx + dz * dz;
+      if (distSq < r * r) {
+        var dist = Math.sqrt(distSq);
+        if (dist > 0.0001) {
+          var push = (r - dist) / dist;
+          entity.x += dx * push; entity.z += dz * push;
+        } else {
+          var toLeft = entity.x - w.x0, toRight = w.x1 - entity.x, toBack = entity.z - w.z0, toFront = w.z1 - entity.z;
+          var minPen = Math.min(toLeft, toRight, toBack, toFront);
+          if (minPen === toLeft) entity.x = w.x0 - r;
+          else if (minPen === toRight) entity.x = w.x1 + r;
+          else if (minPen === toBack) entity.z = w.z0 - r;
+          else entity.z = w.z1 + r;
+        }
+      }
+    }
+  }
+
   var DOOR_MAT = new THREE.MeshStandardMaterial({ color: 0x4a3a68, roughness: 0.55, metalness: 0.15, emissive: 0xffb020, emissiveIntensity: 0.18 });
 
   function buildLevel() {
@@ -636,6 +684,7 @@
     roomsCleared = [];
     obstacles = [];
     doors = [];
+    wallObstacles = [];
     levelLength = config.rooms * ROOM_WIDTH;
 
     var floorTex = makeFloorTexture(0x241d33, 0x342850);
@@ -680,6 +729,8 @@
           seg.position.set(roomX0, 1.3, dz * (gapHalf + segW / 2));
           seg.receiveShadow = true;
           worldGroup.add(seg);
+          var zEdgeA = dz * gapHalf, zEdgeB = dz * (ROOM_DEPTH / 2);
+          wallObstacles.push({ x0: roomX0 - 0.17, x1: roomX0 + 0.17, z0: Math.min(zEdgeA, zEdgeB), z1: Math.max(zEdgeA, zEdgeB) });
         });
         // sliding door leaves: closed = meet at center (locked = red tint), open = slide into the wall pockets
         var leafHalf = gapHalf * 0.98;
@@ -1020,6 +1071,7 @@
       nz = Math.max(-BAND_HALF, Math.min(BAND_HALF, nz));
       player.x = nx; player.z = nz;
       if (!player.jumping) resolveObstacles(player, player.collisionR);
+      resolveWalls(player, player.collisionR);
       player.facing = Math.atan2(ix, iz);
       player.walkPhase += dt * 9;
     }
@@ -1083,6 +1135,7 @@
       e.x = Math.max(0.3, Math.min(levelLength - 0.3, e.x));
       e.z = Math.max(-BAND_HALF, Math.min(BAND_HALF, e.z));
       resolveObstacles(e, e.collisionR);
+      resolveWalls(e, e.collisionR);
     });
 
     // --- doors: automatic, open for anyone (player or enemy) approaching ---
