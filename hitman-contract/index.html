@@ -51,6 +51,14 @@
   .joy-zone { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
   .joy-base { position: absolute; width: 104px; height: 104px; margin-left: -52px; margin-top: -52px; border-radius: 50%; background: rgba(255,255,255,0.07); border: 2px solid rgba(255,255,255,0.16); display: none; pointer-events: none; }
   .joy-knob { position: absolute; width: 46px; height: 46px; margin-left: -23px; margin-top: -23px; border-radius: 50%; background: rgba(255,176,32,0.4); border: 2px solid rgba(255,176,32,0.7); pointer-events: none; }
+  #jumpBtn {
+    position: absolute; right: 22px; bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+    width: 74px; height: 74px; border-radius: 50%; border: none; pointer-events: auto; user-select: none;
+    font-family: inherit; font-weight: 800; font-size: 12px; color: #1a0c04;
+    background: linear-gradient(135deg,var(--accent),var(--accent2));
+    box-shadow: 0 8px 20px rgba(255,106,61,0.45);
+  }
+  #jumpBtn:active { transform: scale(0.92); }
 
   .popup { position: absolute; font-weight: 900; font-size: 17px; color: var(--gold); text-shadow: 0 0 10px rgba(74,222,128,0.6); pointer-events: none; z-index: 7; transform: translate(-50%,-50%); }
   .flash { position: absolute; inset: 0; background: #ff2d44; opacity: 0; pointer-events: none; z-index: 6; }
@@ -111,6 +119,7 @@
     <div class="controls" id="controls">
       <div class="joy-zone" id="joyZone"></div>
       <div class="joy-base" id="joyBase"><div class="joy-knob" id="joyKnob"></div></div>
+      <button id="jumpBtn">JUMP</button>
     </div>
 
     <div class="overlay hidden" id="titleOverlay">
@@ -179,6 +188,7 @@
   var joyZone = document.getElementById("joyZone");
   var joyBase = document.getElementById("joyBase");
   var joyKnob = document.getElementById("joyKnob");
+  var jumpBtn = document.getElementById("jumpBtn");
 
   var titleOverlay = document.getElementById("titleOverlay");
   var heroesOverlay = document.getElementById("heroesOverlay");
@@ -420,7 +430,8 @@
     var legXOff = 0.07 * sc;
 
     var root = new THREE.Group();
-    root.add(makeBlobShadow(0.3 * sc));
+    var shadowMesh = makeBlobShadow(0.3 * sc);
+    root.add(shadowMesh);
 
     var legHip = new THREE.Group(); legHip.position.set(0, hipY, 0); root.add(legHip);
     var legR = seg(legHip, thighLen, thighW, outfitMat, legXOff);
@@ -474,7 +485,7 @@
       root: root, bob: bob,
       legs: { R: { hip: legR.pivot, knee: shinR.pivot }, L: { hip: legL.pivot, knee: shinL.pivot } },
       arms: { R: { shoulder: armR.pivot, elbow: foreR.pivot }, L: { shoulder: armL.pivot, elbow: foreL.pivot } },
-      weaponGroup: weaponGroup, scaleVal: sc, weaponKey: weaponKey
+      weaponGroup: weaponGroup, scaleVal: sc, weaponKey: weaponKey, shadowMesh: shadowMesh
     };
   }
 
@@ -545,6 +556,7 @@
     pot: solidMat(0xb86a3a, 0.8, 0), leaf: solidMat(0x2d8a4e, 0.7, 0),
     crate: solidMat(0x6b4a2a, 0.9, 0)
   };
+  var PROP_COLLIDE_R = { desk: 0.56, shelf: 0.48, plant: 0.3, crate: 0.3 };
   function makeProp(type, scale) {
     var g = new THREE.Group();
     if (type === "desk") {
@@ -571,24 +583,44 @@
   var state = "menu";
   var player = {
     x: 2.2, z: 0, speed: 3.6, collisionR: 0.26, facing: 0,
-    hp: 6, maxHp: 6, walkPhase: 0, swingT: 0, cooldown: 0, moving: false, vis: null, weapon: null
+    hp: 6, maxHp: 6, walkPhase: 0, swingT: 0, cooldown: 0, moving: false, vis: null, weapon: null,
+    jumping: false, jumpT: 0
   };
+  var JUMP_DURATION = 0.46, JUMP_HEIGHT = 1.15;
   var shakeT = 0;
   var hpFillEl = document.getElementById("hpFill");
   function updateHpBar() { hpFillEl.style.width = Math.max(0, player.hp / player.maxHp * 100) + "%"; }
   var playerOutfitMat = null, playerSkinMat = null, playerMaskMat = null;
   var camTarget = new THREE.Vector3();
-  var rooms = [], enemies = [], particles = [], projectiles = [], cashPickups = [], enemyShots = [], muzzleFlashes = [], shockwaves = [];
+  var rooms = [], enemies = [], particles = [], projectiles = [], cashPickups = [], enemyShots = [], muzzleFlashes = [], shockwaves = [], obstacles = [], doors = [];
   var config, currentRoomIndex, roomsCleared, levelLength, runCashEarned, missionEnded;
   var clock = new THREE.Clock();
 
   function rand(min, max) { return min + Math.random() * (max - min); }
   function clearGroup(group) { while (group.children.length) group.remove(group.children[0]); }
 
+  function resolveObstacles(entity, r) {
+    for (var i = 0; i < obstacles.length; i++) {
+      var o = obstacles[i];
+      var dx = entity.x - o.x, dz = entity.z - o.z;
+      var dist = Math.sqrt(dx * dx + dz * dz);
+      var minDist = r + o.r;
+      if (dist > 0 && dist < minDist) {
+        var push = (minDist - dist) / dist;
+        entity.x += dx * push; entity.z += dz * push;
+      }
+    }
+  }
+
+  var DOOR_MAT = new THREE.MeshStandardMaterial({ color: 0x4a3a68, roughness: 0.55, metalness: 0.15, emissive: 0xffb020, emissiveIntensity: 0.18 });
+  var DOOR_LOCK_MAT = new THREE.MeshStandardMaterial({ color: 0x5a2430, roughness: 0.55, metalness: 0.15, emissive: 0xff2d44, emissiveIntensity: 0.22 });
+
   function buildLevel() {
     clearGroup(worldGroup);
     rooms = [];
     roomsCleared = [];
+    obstacles = [];
+    doors = [];
     levelLength = config.rooms * ROOM_WIDTH;
 
     var floorTex = makeFloorTexture(0x241d33, 0x342850);
@@ -596,7 +628,6 @@
     var floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.92, metalness: 0.04 });
     var wallMat = solidMat(0x362a4a, 0.8, 0);
     var windowMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 });
-    var doorGlowMat = new THREE.MeshBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0.5 });
 
     var floor = new THREE.Mesh(new THREE.PlaneGeometry(levelLength + 4, ROOM_DEPTH), floorMat);
     floor.rotation.x = -Math.PI / 2;
@@ -635,23 +666,32 @@
           seg.receiveShadow = true;
           worldGroup.add(seg);
         });
-        var glow = new THREE.Mesh(GEO_BOX, doorGlowMat);
-        glow.scale.set(0.08, 2.2, gapHalf * 2);
-        glow.position.set(roomX0, 1.1, 0);
-        worldGroup.add(glow);
+        // sliding door leaves: closed = meet at center (locked = red tint), open = slide into the wall pockets
+        var leafHalf = gapHalf * 0.98;
+        var leafL = new THREE.Mesh(GEO_BOX, DOOR_MAT);
+        leafL.scale.set(0.16, 2.3, leafHalf);
+        leafL.castShadow = true; leafL.receiveShadow = true;
+        leafL.position.set(roomX0, 1.2, -leafHalf / 2);
+        worldGroup.add(leafL);
+        var leafR = leafL.clone();
+        leafR.position.set(roomX0, 1.2, leafHalf / 2);
+        worldGroup.add(leafR);
+        doors.push({ x: roomX0, leafL: leafL, leafR: leafR, leafHalf: leafHalf, gatingRoom: r - 1, open: 0 });
       }
 
-      // decoration
+      // decoration (collidable — blocks the player and enemies unless jumping)
       var propCount = 2 + Math.floor(Math.random() * 2);
       for (var p = 0; p < propCount; p++) {
         var type = propTypes[Math.floor(Math.random() * propTypes.length)];
         var px = roomX0 + rand(1.5, ROOM_WIDTH - 1.5);
         var pz = (Math.random() < 0.5 ? -1 : 1) * rand(BAND_HALF * 0.55, BAND_HALF * 0.95);
-        var prop = makeProp(type, rand(0.85, 1.15));
+        var propScale = rand(0.85, 1.15);
+        var prop = makeProp(type, propScale);
         prop.position.set(px, 0, pz);
         prop.rotation.y = Math.random() * Math.PI * 2;
         prop.traverse(function (o) { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
         worldGroup.add(prop);
+        obstacles.push({ x: px, z: pz, r: PROP_COLLIDE_R[type] * propScale });
       }
     }
 
@@ -710,6 +750,7 @@
 
     player.x = 2.2; player.z = 0; player.facing = 0;
     player.hp = player.maxHp; player.walkPhase = 0; player.swingT = 0; player.cooldown = 0; player.moving = false;
+    player.jumping = false; player.jumpT = 0;
     player.weapon = weapon;
     shakeT = 0;
     updateHpBar();
@@ -878,8 +919,15 @@
 
   // ---------- Input ----------
   var keys = {};
-  window.addEventListener("keydown", function (e) { keys[e.key.toLowerCase()] = true; });
+  function tryJump() {
+    if (state === "playing" && !player.jumping) { player.jumping = true; player.jumpT = 0; }
+  }
+  window.addEventListener("keydown", function (e) {
+    keys[e.key.toLowerCase()] = true;
+    if (e.key === " " && !e.repeat) { e.preventDefault(); tryJump(); }
+  });
   window.addEventListener("keyup", function (e) { keys[e.key.toLowerCase()] = false; });
+  jumpBtn.addEventListener("pointerdown", function (e) { e.preventDefault(); tryJump(); });
   function keyboardVector() {
     var x = 0, y = 0;
     if (keys["arrowleft"] || keys["a"]) x -= 1;
@@ -960,8 +1008,17 @@
       nx = Math.max(0.6, Math.min(levelLength - 0.6, nx));
       nz = Math.max(-BAND_HALF, Math.min(BAND_HALF, nz));
       player.x = nx; player.z = nz;
+      if (!player.jumping) resolveObstacles(player, player.collisionR);
       player.facing = Math.atan2(ix, iz);
       player.walkPhase += dt * 9;
+    }
+
+    // --- jump arc ---
+    var jumpY = 0;
+    if (player.jumping) {
+      player.jumpT += dt;
+      if (player.jumpT >= JUMP_DURATION) { player.jumping = false; player.jumpT = 0; }
+      else jumpY = Math.sin((player.jumpT / JUMP_DURATION) * Math.PI) * JUMP_HEIGHT;
     }
 
     // win check: reached end of final room and it's cleared
@@ -1014,6 +1071,20 @@
       }
       e.x = Math.max(0.3, Math.min(levelLength - 0.3, e.x));
       e.z = Math.max(-BAND_HALF, Math.min(BAND_HALF, e.z));
+      resolveObstacles(e, e.collisionR);
+    });
+
+    // --- doors: open once their room is cleared and the player is close ---
+    doors.forEach(function (d) {
+      var near = Math.abs(player.x - d.x) < 2.6 && roomsCleared[d.gatingRoom];
+      var targetOpen = near ? 1 : 0;
+      d.open += (targetOpen - d.open) * Math.min(dt * 6, 1);
+      var slide = d.open * (d.leafHalf + 0.25);
+      d.leafL.position.z = -d.leafHalf / 2 - slide;
+      d.leafR.position.z = d.leafHalf / 2 + slide;
+      var locked = !roomsCleared[d.gatingRoom];
+      d.leafL.material = locked ? DOOR_LOCK_MAT : DOOR_MAT;
+      d.leafR.material = locked ? DOOR_LOCK_MAT : DOOR_MAT;
     });
 
     // --- projectiles ---
@@ -1106,8 +1177,11 @@
     }
 
     // --- visuals ---
-    player.vis.root.position.set(player.x, 0, player.z);
+    player.vis.root.position.set(player.x, jumpY, player.z);
     player.vis.root.rotation.y = player.facing;
+    player.vis.shadowMesh.material.opacity = 0.32 * (1 - jumpY / JUMP_HEIGHT * 0.7);
+    var shadowSc = 1 - (jumpY / JUMP_HEIGHT) * 0.35;
+    player.vis.shadowMesh.scale.set(shadowSc, shadowSc, shadowSc);
     var swingPhase = player.swingT > 0 ? (1 - player.swingT / Math.max(0.01, Math.min(weapon.cooldown, 0.22))) : -1;
     animateCharacter(player.vis, player.walkPhase, player.moving ? 1 : 0.1, swingPhase);
 
