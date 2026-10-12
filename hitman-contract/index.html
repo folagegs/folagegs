@@ -42,6 +42,10 @@
   .cash-val { font-weight: 800; font-size: 15px; }
   .contract-pill { background: rgba(10,8,18,0.55); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; padding: 7px 16px; font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-align: center; }
   .contract-pill .room { display: block; font-size: 10px; color: var(--text-dim); font-weight: 600; margin-top: 2px; }
+  .hp-wrap { display: flex; align-items: center; gap: 6px; background: rgba(10,8,18,0.55); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; padding: 7px 12px; margin-top: 7px; }
+  .hp-bar { width: 84px; height: 9px; border-radius: 5px; background: rgba(255,255,255,0.12); overflow: hidden; }
+  .hp-fill { height: 100%; background: linear-gradient(90deg,#ff4d6d,#ff8a3d); transition: width 0.2s; }
+  .hp-icon { font-size: 11px; }
 
   .controls { position: absolute; inset: 0; z-index: 8; display: none; }
   .joy-zone { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
@@ -97,7 +101,10 @@
     <div id="popupLayer"></div>
 
     <div class="hud" id="hud">
-      <div class="cash-pill"><div class="cash-icon">$</div><div class="cash-val" id="cashVal">0</div></div>
+      <div>
+        <div class="cash-pill"><div class="cash-icon">$</div><div class="cash-val" id="cashVal">0</div></div>
+        <div class="hp-wrap"><div class="hp-icon">❤️</div><div class="hp-bar"><div class="hp-fill" id="hpFill" style="width:100%;"></div></div></div>
+      </div>
       <div class="contract-pill">CONTRACT <span id="contractNum">1</span><span class="room" id="roomVal">Room 1/3</span></div>
     </div>
 
@@ -202,10 +209,12 @@
 
   // ================= Data =================
   var WEAPONS = [
-    { key: "katana", name: "Katana", icon: "⚔️", cost: 0, kind: "melee", range: 1.5, damage: 1, cooldown: 0.42 },
-    { key: "pistol", name: "Pistol", icon: "🔫", cost: 200, kind: "ranged", range: 6.5, damage: 1, cooldown: 0.5, projSpeed: 15 },
-    { key: "ak47", name: "AK47", icon: "🔫", cost: 700, kind: "ranged", range: 7.5, damage: 1, cooldown: 0.13, projSpeed: 19 },
-    { key: "rpg", name: "RPG", icon: "💥", cost: 700, kind: "splash", range: 8.5, damage: 3, cooldown: 1.15, projSpeed: 11, splashRadius: 2.3 }
+    { key: "katana", name: "Katana", icon: "⚔️", cost: 0, kind: "melee", range: 1.5, damage: 1, cooldown: 0.36 },
+    { key: "pistol", name: "Pistol", icon: "🔫", cost: 200, kind: "ranged", range: 6.5, damage: 1, cooldown: 0.46, projSpeed: 16 },
+    { key: "shotgun", name: "Shotgun", icon: "🔫", cost: 450, kind: "spread", range: 4.8, damage: 1, cooldown: 0.72, projSpeed: 17, pellets: 3 },
+    { key: "ak47", name: "AK47", icon: "🔫", cost: 700, kind: "ranged", range: 7.5, damage: 1, cooldown: 0.12, projSpeed: 20 },
+    { key: "rpg", name: "RPG", icon: "💥", cost: 700, kind: "splash", range: 8.5, damage: 3, cooldown: 1.1, projSpeed: 12, splashRadius: 2.5 },
+    { key: "minigun", name: "Minigun", icon: "🔫", cost: 1400, kind: "ranged", range: 9, damage: 1, cooldown: 0.065, projSpeed: 23 }
   ];
 
   var TARGET_NAMES = ["Street Crew", "Warehouse Gang", "Office Syndicate", "Smuggler Ring", "Casino Bosses", "Penthouse Cartel"];
@@ -315,12 +324,23 @@
   var W = 0, H = 0, DPR = 1;
 
   var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   var scene = new THREE.Scene();
   var camera = new THREE.PerspectiveCamera(48, 1, 0.1, 300);
-  var ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
-  var sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
-  sunLight.position.set(5, 14, 6);
-  scene.add(ambientLight, sunLight);
+  var ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+  var fillLight = new THREE.HemisphereLight(0x8899ff, 0x201018, 0.35);
+  var sunLight = new THREE.DirectionalLight(0xffffff, 1.0);
+  sunLight.position.set(6, 14, 7);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(1024, 1024);
+  sunLight.shadow.camera.near = 2;
+  sunLight.shadow.camera.far = 30;
+  sunLight.shadow.camera.left = -10; sunLight.shadow.camera.right = 10;
+  sunLight.shadow.camera.top = 10; sunLight.shadow.camera.bottom = -10;
+  sunLight.shadow.camera.updateProjectionMatrix();
+  sunLight.shadow.bias = -0.0015;
+  scene.add(ambientLight, fillLight, sunLight, sunLight.target);
   scene.background = new THREE.Color(0x1a1830);
   scene.fog = new THREE.Fog(0x14101f, 14, 34);
 
@@ -355,6 +375,20 @@
   var STEEL_MAT = solidMat(0xdbe3f0, 0.3, 0.75);
   var DARK_MAT = solidMat(0x2a2432, 0.7, 0.15);
 
+  function makeFloorTexture(baseHex, lineHex) {
+    var c = document.createElement("canvas"); c.width = c.height = 128;
+    var fc = c.getContext("2d");
+    var base = "#" + baseHex.toString(16).padStart(6, "0");
+    var line = "#" + lineHex.toString(16).padStart(6, "0");
+    fc.fillStyle = base; fc.fillRect(0, 0, 128, 128);
+    fc.fillStyle = "rgba(255,255,255,0.025)"; fc.fillRect(0, 0, 64, 128);
+    fc.strokeStyle = line; fc.lineWidth = 3;
+    fc.strokeRect(1.5, 1.5, 125, 125);
+    var tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+  }
+
   function makeBlobShadow(radius) {
     var m = new THREE.Mesh(new THREE.CircleGeometry(radius, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false }));
     m.rotation.x = -Math.PI / 2;
@@ -372,12 +406,13 @@
     return { pivot: pivot, anchor: anchor };
   }
 
-  function createCharacter(skinColor, outfitColor, maskColor, bulky, weaponKey) {
+  function createCharacter(skinColor, outfitColor, maskColor, bulky, weaponKey, accessory) {
     var sc = bulky ? 1.15 : 1;
     var skinMat = solidMat(skinColor, 0.75, 0.05);
     var outfitMat = solidMat(outfitColor, 0.7, 0.08);
     var maskMat = solidMat(maskColor, 0.8, 0.02);
     var eyeMat = solidMat(0xffffff, 0.3, 0.1);
+    var accentMat = solidMat(accessory === "rusher" ? 0xff3344 : accessory === "gunner" ? 0x2a2e3a : maskColor, 0.6, 0.1);
 
     var hipY = 0.5 * sc, shoulderOff = 0.3 * sc, headOff = 0.13 * sc, headR = 0.095 * sc;
     var thighLen = 0.26 * sc, shinLen = 0.24 * sc, thighW = 0.085 * sc, shinW = 0.065 * sc;
@@ -392,6 +427,12 @@
     var shinR = seg(legR.anchor, shinLen, shinW, skinMat, 0);
     var legL = seg(legHip, thighLen, thighW, outfitMat, -legXOff);
     var shinL = seg(legL.anchor, shinLen, shinW, skinMat, 0);
+    [shinR, shinL].forEach(function (s) {
+      var boot = new THREE.Mesh(GEO_BOX, DARK_MAT);
+      boot.scale.set(shinW * 1.25, 0.05 * sc, shinW * 1.55);
+      boot.position.set(0, -shinLen + 0.025 * sc, shinW * 0.3);
+      s.anchor.parent.add(boot);
+    });
 
     var bob = new THREE.Group(); bob.position.set(0, hipY, 0); root.add(bob);
     var hipW = 0.17 * sc, shoulderW = 0.27 * sc, torsoD = 0.16 * sc;
@@ -401,11 +442,21 @@
     upperTorso.scale.set(shoulderW, shoulderOff * 0.66, torsoD); upperTorso.position.set(0, shoulderOff * 0.63, 0); bob.add(upperTorso);
     var belt = new THREE.Mesh(GEO_BOX, maskMat);
     belt.scale.set(hipW * 1.08, 0.035 * sc, torsoD * 1.08); belt.position.set(0, 0.015 * sc, 0); bob.add(belt);
+    var strap = new THREE.Mesh(GEO_BOX, accentMat);
+    strap.scale.set(0.05 * sc, shoulderOff * 0.95, torsoD * 1.1); strap.position.set(shoulderW * 0.18, shoulderOff * 0.5, 0); strap.rotation.z = 0.32; bob.add(strap);
 
     var headGroup = new THREE.Group(); headGroup.position.set(0, shoulderOff + headOff, 0); bob.add(headGroup);
     var headMesh = new THREE.Mesh(GEO_BOX, skinMat); headMesh.scale.set(headR * 1.7, headR * 1.7, headR * 1.5); headGroup.add(headMesh);
     var maskMesh = new THREE.Mesh(GEO_BOX, maskMat); maskMesh.scale.set(headR * 1.76, headR * 0.5, headR * 1.3); maskMesh.position.set(0, headR * 0.65, 0.02 * sc); headGroup.add(maskMesh);
     var eyeMesh = new THREE.Mesh(GEO_BOX, eyeMat); eyeMesh.scale.set(headR * 0.9, headR * 0.2, headR * 0.1); eyeMesh.position.set(0, headR * 0.05, headR * 0.82); headGroup.add(eyeMesh);
+    if (accessory === "gunner") {
+      var visor = new THREE.Mesh(GEO_BOX, STEEL_MAT); visor.scale.set(headR * 1.6, headR * 0.35, headR * 0.15); visor.position.set(0, headR * 0.3, headR * 1.0); headGroup.add(visor);
+    } else if (accessory === "rusher") {
+      var band = new THREE.Mesh(GEO_BOX, accentMat); band.scale.set(headR * 1.8, headR * 0.3, headR * 1.35); band.position.set(0, headR * 1.0, 0); headGroup.add(band);
+    } else if (accessory === "cap") {
+      var cap = new THREE.Mesh(GEO_BOX, outfitMat); cap.scale.set(headR * 1.85, headR * 0.5, headR * 1.6); cap.position.set(0, headR * 1.05, -headR * 0.05); headGroup.add(cap);
+      var brim = new THREE.Mesh(GEO_BOX, outfitMat); brim.scale.set(headR * 1.5, headR * 0.1, headR * 0.6); brim.position.set(0, headR * 0.82, headR * 1.05); headGroup.add(brim);
+    }
 
     var shoulderGroup = new THREE.Group(); shoulderGroup.position.set(0, shoulderOff * 0.92, 0); bob.add(shoulderGroup);
     var armR = seg(shoulderGroup, armLen1, armW1, outfitMat, shoulderW * 0.48);
@@ -415,6 +466,8 @@
 
     var weaponGroup = new THREE.Group(); foreR.anchor.add(weaponGroup);
     buildWeaponMesh(weaponGroup, weaponKey, sc);
+
+    root.traverse(function (o) { if (o.isMesh) o.castShadow = true; });
 
     entitiesGroup.add(root);
     return {
@@ -441,6 +494,19 @@
     } else if (key === "rpg") {
       var tube = new THREE.Mesh(GEO_CYL, DARK_MAT); tube.rotation.z = Math.PI / 2; tube.scale.set(0.08 * sc, 0.55 * sc, 0.08 * sc); tube.position.set(0, 0, 0.2 * sc); group.add(tube);
       var cone = new THREE.Mesh(GEO_CONE, solidMat(0x8a1020, 0.6, 0.1)); cone.rotation.z = -Math.PI / 2; cone.scale.set(0.09 * sc, 0.14 * sc, 0.09 * sc); cone.position.set(0, 0, 0.5 * sc); group.add(cone);
+    } else if (key === "shotgun") {
+      var sbody = new THREE.Mesh(GEO_BOX, solidMat(0x4a3420, 0.7, 0.05)); sbody.scale.set(0.055 * sc, 0.08 * sc, 0.26 * sc); sbody.position.set(0, -0.02 * sc, 0.1 * sc); group.add(sbody);
+      var sbarrel = new THREE.Mesh(GEO_CYL, STEEL_MAT); sbarrel.rotation.z = Math.PI / 2; sbarrel.scale.set(0.035 * sc, 0.3 * sc, 0.035 * sc); sbarrel.position.set(0, 0.01 * sc, 0.3 * sc); group.add(sbarrel);
+      var spump = new THREE.Mesh(GEO_BOX, DARK_MAT); spump.scale.set(0.045 * sc, 0.045 * sc, 0.14 * sc); spump.position.set(0, -0.05 * sc, 0.22 * sc); group.add(spump);
+    } else if (key === "minigun") {
+      var mbody = new THREE.Mesh(GEO_BOX, DARK_MAT); mbody.scale.set(0.09 * sc, 0.1 * sc, 0.22 * sc); mbody.position.set(0, -0.02 * sc, 0.08 * sc); group.add(mbody);
+      for (var bi = 0; bi < 5; bi++) {
+        var ang = (bi / 5) * Math.PI * 2;
+        var bl2 = new THREE.Mesh(GEO_CYL, STEEL_MAT); bl2.rotation.z = Math.PI / 2;
+        bl2.scale.set(0.018 * sc, 0.4 * sc, 0.018 * sc);
+        bl2.position.set(Math.cos(ang) * 0.045 * sc, -0.02 * sc + Math.sin(ang) * 0.045 * sc, 0.32 * sc);
+        group.add(bl2);
+      }
     }
   }
 
@@ -505,11 +571,14 @@
   var state = "menu";
   var player = {
     x: 2.2, z: 0, speed: 3.6, collisionR: 0.26, facing: 0,
-    hp: 5, maxHp: 5, walkPhase: 0, swingT: 0, cooldown: 0, moving: false, vis: null, weapon: null
+    hp: 6, maxHp: 6, walkPhase: 0, swingT: 0, cooldown: 0, moving: false, vis: null, weapon: null
   };
+  var shakeT = 0;
+  var hpFillEl = document.getElementById("hpFill");
+  function updateHpBar() { hpFillEl.style.width = Math.max(0, player.hp / player.maxHp * 100) + "%"; }
   var playerOutfitMat = null, playerSkinMat = null, playerMaskMat = null;
   var camTarget = new THREE.Vector3();
-  var rooms = [], enemies = [], particles = [], projectiles = [], cashPickups = [];
+  var rooms = [], enemies = [], particles = [], projectiles = [], cashPickups = [], enemyShots = [], muzzleFlashes = [], shockwaves = [];
   var config, currentRoomIndex, roomsCleared, levelLength, runCashEarned, missionEnded;
   var clock = new THREE.Clock();
 
@@ -522,20 +591,31 @@
     roomsCleared = [];
     levelLength = config.rooms * ROOM_WIDTH;
 
-    var floorMat = solidMat(0x241d33, 0.95, 0);
+    var floorTex = makeFloorTexture(0x241d33, 0x342850);
+    floorTex.repeat.set(levelLength / 1.8, ROOM_DEPTH / 1.8);
+    var floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.92, metalness: 0.04 });
     var wallMat = solidMat(0x362a4a, 0.8, 0);
+    var windowMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 });
     var doorGlowMat = new THREE.MeshBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0.5 });
 
     var floor = new THREE.Mesh(new THREE.PlaneGeometry(levelLength + 4, ROOM_DEPTH), floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(levelLength / 2, 0, 0);
+    floor.receiveShadow = true;
     worldGroup.add(floor);
 
     [-1, 1].forEach(function (side) {
       var wall = new THREE.Mesh(GEO_BOX, wallMat);
       wall.scale.set(levelLength + 4, 2.6, 0.3);
       wall.position.set(levelLength / 2, 1.3, side * (ROOM_DEPTH / 2 + 0.15));
+      wall.receiveShadow = true;
       worldGroup.add(wall);
+      for (var wx = 3; wx < levelLength; wx += 5) {
+        var win = new THREE.Mesh(GEO_BOX, windowMat);
+        win.scale.set(1.1, 0.7, 0.06);
+        win.position.set(wx, 1.6, side * (ROOM_DEPTH / 2 + 0.14));
+        worldGroup.add(win);
+      }
     });
 
     var propTypes = ["desk", "shelf", "plant", "crate"];
@@ -552,6 +632,7 @@
           var seg = new THREE.Mesh(GEO_BOX, wallMat);
           seg.scale.set(0.3, 2.6, segW);
           seg.position.set(roomX0, 1.3, dz * (gapHalf + segW / 2));
+          seg.receiveShadow = true;
           worldGroup.add(seg);
         });
         var glow = new THREE.Mesh(GEO_BOX, doorGlowMat);
@@ -569,6 +650,7 @@
         var prop = makeProp(type, rand(0.85, 1.15));
         prop.position.set(px, 0, pz);
         prop.rotation.y = Math.random() * Math.PI * 2;
+        prop.traverse(function (o) { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
         worldGroup.add(prop);
       }
     }
@@ -580,13 +662,29 @@
     });
   }
 
-  function spawnEnemyAt(x, z, hp) {
+  var ENEMY_TYPES = {
+    grunt:  { outfit: 0x3a3a52, speedMul: 1.0, attackRange: 0.95, attackCooldown: 0.75, damage: 1, hpMul: 1, weapon: "katana", accessory: "cap" },
+    rusher: { outfit: 0x7a1a24, speedMul: 1.75, attackRange: 0.85, attackCooldown: 0.55, damage: 1, hpMul: 0.75, weapon: "katana", accessory: "rusher" },
+    gunner: { outfit: 0x2a2e3a, speedMul: 0.85, attackRange: 5.2, attackCooldown: 1.15, damage: 1, hpMul: 1, weapon: "pistol", accessory: "gunner", ranged: true, keepDist: 3.2 }
+  };
+
+  function pickEnemyType(n) {
+    var roll = Math.random();
+    if (n >= 3 && roll < 0.22) return "gunner";
+    if (n >= 2 && roll < 0.48) return "rusher";
+    return "grunt";
+  }
+
+  function spawnEnemyAt(x, z, hp, typeKey) {
+    var t = ENEMY_TYPES[typeKey];
     var e = {
-      x: x, z: z, homeX: x, homeZ: z, hp: hp, maxHp: hp,
-      speed: 1.1 * config.enemySpeedMul, collisionR: 0.26, facing: Math.PI,
-      attackRange: 0.9, attackCooldown: rand(0, 0.6), walkPhase: Math.random() * 10, flash: 0, alive: true
+      x: x, z: z, type: typeKey, hp: Math.max(1, Math.round(hp * t.hpMul)), maxHp: 1,
+      speed: 2.0 * t.speedMul * config.enemySpeedMul, collisionR: 0.26, facing: Math.PI,
+      attackRange: t.attackRange, attackCooldown: rand(0, 0.4), attackCooldownBase: t.attackCooldown, damage: t.damage,
+      walkPhase: Math.random() * 10, flash: 0, alive: true, ranged: !!t.ranged, keepDist: t.keepDist || 0
     };
-    e.vis = createCharacter(0xcf9f78, 0x3a3a52, 0x1a1624, false, "katana");
+    e.maxHp = e.hp;
+    e.vis = createCharacter(0xcf9f78, t.outfit, 0x1a1624, false, t.weapon, t.accessory);
     enemies.push(e);
     return e;
   }
@@ -596,7 +694,7 @@
     for (var i = 0; i < config.enemiesPerRoom; i++) {
       var ex = room.x0 + rand(2.5, ROOM_WIDTH - 1.5);
       var ez = rand(-BAND_HALF * 0.8, BAND_HALF * 0.8);
-      var e = spawnEnemyAt(ex, ez, config.enemyHp);
+      var e = spawnEnemyAt(ex, ez, config.enemyHp, pickEnemyType(contractNumber));
       room.enemyIds.push(e);
     }
   }
@@ -608,17 +706,19 @@
 
     clearGroup(entitiesGroup);
     clearGroup(fxGroup);
-    enemies = []; particles = []; projectiles = []; cashPickups = [];
+    enemies = []; particles = []; projectiles = []; cashPickups = []; enemyShots = []; muzzleFlashes = []; shockwaves = [];
 
     player.x = 2.2; player.z = 0; player.facing = 0;
     player.hp = player.maxHp; player.walkPhase = 0; player.swingT = 0; player.cooldown = 0; player.moving = false;
     player.weapon = weapon;
+    shakeT = 0;
+    updateHpBar();
 
     var hc = HERO_COLORS[heroIndex];
     playerOutfitMat = solidMat(hc, 0.7, 0.08);
     playerSkinMat = solidMat(0xe4bb92, 0.75, 0.05);
     playerMaskMat = solidMat(0x1a1420, 0.8, 0.02);
-    player.vis = createCharacter(0xe4bb92, hc, 0x1a1420, false, weapon.key);
+    player.vis = createCharacter(0xe4bb92, hc, 0x1a1420, false, weapon.key, "cap");
 
     currentRoomIndex = 0;
     populateRoom(0);
@@ -690,6 +790,35 @@
     }
   }
 
+  function spawnMuzzleFlash(origin, angle, color) {
+    var fx = origin.x + Math.sin(angle) * 0.25, fz = origin.z + Math.cos(angle) * 0.25;
+    var mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.22), new THREE.MeshBasicMaterial({ color: color || 0xffe9a0, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }));
+    mesh.position.set(fx, origin.y, fz);
+    mesh.rotation.y = angle;
+    fxGroup.add(mesh);
+    muzzleFlashes.push({ mesh: mesh, t: 0, life: 0.09 });
+  }
+
+  function spawnShockwave(x, z, color, maxScale) {
+    var ring = new THREE.Mesh(new THREE.RingGeometry(0.15, 0.32, 24), new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(x, 0.06, z);
+    fxGroup.add(ring);
+    shockwaves.push({ mesh: ring, t: 0, life: 0.4, maxScale: maxScale });
+  }
+
+  function enemyShootAtPlayer(e) {
+    e.shotT = 0.2;
+    var origin = { x: e.x + Math.sin(e.facing) * 0.3, y: 0.9, z: e.z + Math.cos(e.facing) * 0.3 };
+    var dx = player.x - origin.x, dz = player.z - origin.z;
+    var dd = Math.hypot(dx, dz) || 1;
+    var mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.07, 0), new THREE.MeshStandardMaterial({ color: 0xff6a6a, emissive: 0xff2222, emissiveIntensity: 0.6 }));
+    mesh.position.set(origin.x, origin.y, origin.z);
+    fxGroup.add(mesh);
+    enemyShots.push({ mesh: mesh, x: origin.x, z: origin.z, dirX: dx / dd, dirZ: dz / dd, speed: 12.5, t: 0 });
+    spawnMuzzleFlash(origin, e.facing, 0xff6a6a);
+  }
+
   function flashHit() {
     flashEl.style.transition = "none"; flashEl.style.opacity = "0.4";
     requestAnimationFrame(function () {
@@ -699,7 +828,9 @@
 
   function damagePlayer(dmg) {
     player.hp -= dmg;
+    updateHpBar();
     flashHit();
+    shakeT = 0.26;
     popupText(player.x, 1.6, player.z, "-" + dmg, "#ff4d6d");
     spawnParticles(player.x, 1, player.z, 0xff4d6d, 10);
     if (player.hp <= 0) endRun(false);
@@ -852,21 +983,37 @@
       player.swingT = Math.min(weapon.cooldown, 0.22);
     }
 
-    // --- enemies ---
+    // --- enemies: always alert, close in fast, gunners keep range and shoot ---
     enemies.forEach(function (e) {
       if (e.flash > 0) e.flash -= dt;
       if (e.attackCooldown > 0) e.attackCooldown -= dt;
       var dx = player.x - e.x, dz = player.z - e.z;
-      var dist = Math.sqrt(dx * dx + dz * dz);
-      if (dist < e.attackRange) {
+      var dist = Math.sqrt(dx * dx + dz * dz) || 0.001;
+      var nx2 = dx / dist, nz2 = dz / dist;
+
+      if (e.ranged) {
         e.facing = Math.atan2(dx, dz);
-        if (e.attackCooldown <= 0) { damagePlayer(1); e.attackCooldown = 1.1; }
-      } else if (dist < 5.5) {
-        var nx2 = dx / dist, nz2 = dz / dist;
+        if (dist < e.keepDist) {
+          e.x -= nx2 * e.speed * dt; e.z -= nz2 * e.speed * dt;
+          e.walkPhase += dt * 8;
+        } else if (dist > e.attackRange * 0.85) {
+          e.x += nx2 * e.speed * dt; e.z += nz2 * e.speed * dt;
+          e.walkPhase += dt * 8;
+        }
+        if (dist <= e.attackRange && e.attackCooldown <= 0) {
+          enemyShootAtPlayer(e);
+          e.attackCooldown = e.attackCooldownBase;
+        }
+      } else if (dist < e.attackRange) {
+        e.facing = Math.atan2(dx, dz);
+        if (e.attackCooldown <= 0) { damagePlayer(e.damage); e.attackCooldown = e.attackCooldownBase; }
+      } else {
         e.x += nx2 * e.speed * dt; e.z += nz2 * e.speed * dt;
         e.facing = Math.atan2(nx2, nz2);
-        e.walkPhase += dt * 8;
+        e.walkPhase += dt * 9;
       }
+      e.x = Math.max(0.3, Math.min(levelLength - 0.3, e.x));
+      e.z = Math.max(-BAND_HALF, Math.min(BAND_HALF, e.z));
     });
 
     // --- projectiles ---
@@ -874,6 +1021,7 @@
       var pr = projectiles[i];
       pr.t += dt;
       var alive = pr.target && pr.target.alive;
+      var faceAngle = Math.atan2(pr.dirX, pr.dirZ);
       if (!alive) {
         pr.x += pr.dirX * pr.speed * dt; pr.z += pr.dirZ * pr.speed * dt;
       } else {
@@ -887,9 +1035,11 @@
           continue;
         }
         pr.x += (ddx / dd) * step; pr.z += (ddz / dd) * step;
+        faceAngle = Math.atan2(ddx, ddz);
       }
       pr.mesh.position.set(pr.x, 0.9, pr.z);
-      pr.mesh.rotation.y += dt * 20;
+      if (pr.weapon.kind === "splash") { pr.mesh.rotation.y += dt * 14; pr.mesh.rotation.x += dt * 10; }
+      else { pr.mesh.rotation.y = faceAngle; }
       if (pr.t > 2.2) { fxGroup.remove(pr.mesh); projectiles.splice(i, 1); }
     }
 
@@ -902,6 +1052,44 @@
       p.vy -= 6.5 * dt;
       p.mesh.position.y = Math.max(0.05, p.mesh.position.y + p.vy * dt);
       p.mesh.material.opacity = 1 - p.t / p.life;
+    }
+
+    // --- enemy shots ---
+    for (i = enemyShots.length - 1; i >= 0; i--) {
+      var es = enemyShots[i];
+      es.t += dt;
+      es.x += es.dirX * es.speed * dt; es.z += es.dirZ * es.speed * dt;
+      es.mesh.position.set(es.x, 0.9, es.z);
+      es.mesh.rotation.y += dt * 22;
+      var pd2 = Math.hypot(es.x - player.x, es.z - player.z);
+      if (pd2 < 0.5) {
+        damagePlayer(1);
+        fxGroup.remove(es.mesh);
+        enemyShots.splice(i, 1);
+        continue;
+      }
+      if (es.t > 2.5) { fxGroup.remove(es.mesh); enemyShots.splice(i, 1); }
+    }
+
+    // --- muzzle flashes ---
+    for (i = muzzleFlashes.length - 1; i >= 0; i--) {
+      var mf = muzzleFlashes[i];
+      mf.t += dt;
+      if (mf.t >= mf.life) { fxGroup.remove(mf.mesh); muzzleFlashes.splice(i, 1); continue; }
+      var mfA = 1 - mf.t / mf.life;
+      mf.mesh.material.opacity = mfA * 0.9;
+      mf.mesh.scale.setScalar(1 + (1 - mfA) * 1.8);
+    }
+
+    // --- shockwaves ---
+    for (i = shockwaves.length - 1; i >= 0; i--) {
+      var sw = shockwaves[i];
+      sw.t += dt;
+      if (sw.t >= sw.life) { fxGroup.remove(sw.mesh); shockwaves.splice(i, 1); continue; }
+      var swA = sw.t / sw.life;
+      var swScale = 1 + swA * sw.maxScale;
+      sw.mesh.scale.set(swScale, swScale, swScale);
+      sw.mesh.material.opacity = 0.85 * (1 - swA);
     }
 
     // --- cash pickups ---
@@ -926,15 +1114,43 @@
     enemies.forEach(function (e) {
       e.vis.root.position.set(e.x, 0, e.z);
       e.vis.root.rotation.y = e.facing;
-      animateCharacter(e.vis, e.walkPhase, Math.hypot(player.x - e.x, player.z - e.z) < 5.5 ? 1 : 0.1, -1);
+      var eSwing = e.ranged && e.shotT > 0 ? (1 - e.shotT / 0.2) : -1;
+      animateCharacter(e.vis, e.walkPhase, 1, eSwing);
+      if (e.shotT > 0) e.shotT -= dt;
       var lit = e.flash > 0;
       e.vis.root.traverse(function (o) { if (o.isMesh && o.material && o.material.emissive !== undefined) o.material.emissive.setHex(lit ? 0x552211 : 0x000000); });
     });
 
+    if (shakeT > 0) shakeT -= dt;
+
     camTarget.x += (player.x - camTarget.x) * Math.min(dt * 5, 1);
     camTarget.z += (player.z - camTarget.z) * Math.min(dt * 5, 1);
-    camera.position.set(camTarget.x + 1.5, 10.5, 7);
+    var shakeX = shakeT > 0 ? (Math.random() - 0.5) * shakeT * 1.4 : 0;
+    var shakeY = shakeT > 0 ? (Math.random() - 0.5) * shakeT * 0.8 : 0;
+    camera.position.set(camTarget.x + 1.5 + shakeX, 10.5 + shakeY, 7);
     camera.lookAt(camTarget.x, 0.5, camTarget.z * 0.6);
+
+    sunLight.position.set(camTarget.x + 6, 14, 7);
+    sunLight.target.position.set(camTarget.x, 0, 0);
+    sunLight.target.updateMatrixWorld();
+  }
+
+  function spawnProjectile(origin, target, weapon) {
+    var color = weapon.kind === "splash" ? 0xff6a3d : 0xffd84e;
+    var mesh;
+    if (weapon.kind === "splash") {
+      mesh = new THREE.Mesh(GEO_SPHERE, new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.6 }));
+      mesh.scale.set(0.12, 0.12, 0.12);
+    } else {
+      mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.18, 6), new THREE.MeshBasicMaterial({ color: color }));
+      mesh.rotation.x = Math.PI / 2;
+    }
+    mesh.position.set(origin.x, origin.y, origin.z);
+    fxGroup.add(mesh);
+    var dx = target.x - origin.x, dz = target.z - origin.z;
+    var dd = Math.hypot(dx, dz) || 1;
+    mesh.rotation.y = Math.atan2(dx, dz);
+    projectiles.push({ mesh: mesh, x: origin.x, z: origin.z, target: target, dirX: dx / dd, dirZ: dz / dd, speed: weapon.projSpeed, t: 0, weapon: weapon });
   }
 
   function fireWeapon(target) {
@@ -946,21 +1162,26 @@
       if (target.hp <= 0) killEnemy(target);
       return;
     }
-    var color = weapon.kind === "splash" ? 0xff6a3d : 0xffd84e;
-    var mesh = new THREE.Mesh(weapon.kind === "splash" ? GEO_SPHERE : new THREE.OctahedronGeometry(0.08, 0), new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.5 }));
-    if (weapon.kind === "splash") mesh.scale.set(0.12, 0.12, 0.12);
-    mesh.position.set(origin.x, origin.y, origin.z);
-    fxGroup.add(mesh);
-    var dx = target.x - origin.x, dz = target.z - origin.z;
-    var dd = Math.hypot(dx, dz) || 1;
-    projectiles.push({ mesh: mesh, x: origin.x, z: origin.z, target: target, dirX: dx / dd, dirZ: dz / dd, speed: weapon.projSpeed, t: 0, weapon: weapon });
+    spawnMuzzleFlash(origin, player.facing, weapon.kind === "splash" ? 0xff8a4a : 0xffe9a0);
+    if (weapon.kind === "spread") {
+      var nearby = enemies.slice()
+        .filter(function (e) { return Math.hypot(e.x - player.x, e.z - player.z) <= weapon.range; })
+        .sort(function (a, b) { return Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z); })
+        .slice(0, weapon.pellets);
+      if (nearby.length === 0) nearby = [target];
+      nearby.forEach(function (t) { spawnProjectile(origin, t, weapon); });
+      return;
+    }
+    spawnProjectile(origin, target, weapon);
   }
 
   function hitWithProjectile(pr) {
     var weapon = pr.weapon;
     if (weapon.kind === "splash") {
-      spawnParticles(pr.x, 1, pr.z, 0xff6a3d, 22);
+      spawnParticles(pr.x, 1, pr.z, 0xff6a3d, 26);
+      spawnShockwave(pr.x, pr.z, 0xff6a3d, weapon.splashRadius * 2.2);
       popupText(pr.x, 1.6, pr.z, "BOOM", "#ff6a3d");
+      shakeT = Math.max(shakeT, 0.3);
       enemies.slice().forEach(function (e) {
         var d = Math.hypot(e.x - pr.x, e.z - pr.z);
         if (d <= weapon.splashRadius) {
