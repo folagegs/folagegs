@@ -1,0 +1,987 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Hitman Contract</title>
+<style>
+  :root {
+    --text: #f4f2ff;
+    --text-dim: #a8a4c2;
+    --accent: #ffb020;
+    --accent2: #ff6a3d;
+    --gold: #4ade80;
+    --panel: rgba(16, 14, 26, 0.92);
+    --card: rgba(255,255,255,0.05);
+    --card-border: rgba(255,255,255,0.09);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden;
+    background: #0c0e1a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    touch-action: none;
+    color: var(--text);
+  }
+  #app { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #stage {
+    position: relative;
+    width: 100%; height: 100%;
+    max-width: 480px; max-height: 900px;
+    background: #05060c;
+    overflow: hidden;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 20; color: var(--text-dim); font-size: 13px; letter-spacing: 1px; }
+
+  .hud { position: absolute; top: 0; left: 0; right: 0; padding: 16px 18px; display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; z-index: 5; display: none; }
+  .cash-pill { display: flex; align-items: center; gap: 6px; background: rgba(10,8,18,0.55); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; padding: 7px 14px 7px 8px; }
+  .cash-icon { width: 18px; height: 18px; border-radius: 50%; background: var(--gold); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 900; color: #0a2f16; }
+  .cash-val { font-weight: 800; font-size: 15px; }
+  .contract-pill { background: rgba(10,8,18,0.55); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; padding: 7px 16px; font-size: 12px; font-weight: 800; letter-spacing: 0.5px; text-align: center; }
+  .contract-pill .room { display: block; font-size: 10px; color: var(--text-dim); font-weight: 600; margin-top: 2px; }
+
+  .controls { position: absolute; inset: 0; z-index: 8; display: none; }
+  .joy-zone { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  .joy-base { position: absolute; width: 104px; height: 104px; margin-left: -52px; margin-top: -52px; border-radius: 50%; background: rgba(255,255,255,0.07); border: 2px solid rgba(255,255,255,0.16); display: none; pointer-events: none; }
+  .joy-knob { position: absolute; width: 46px; height: 46px; margin-left: -23px; margin-top: -23px; border-radius: 50%; background: rgba(255,176,32,0.4); border: 2px solid rgba(255,176,32,0.7); pointer-events: none; }
+
+  .popup { position: absolute; font-weight: 900; font-size: 17px; color: var(--gold); text-shadow: 0 0 10px rgba(74,222,128,0.6); pointer-events: none; z-index: 7; transform: translate(-50%,-50%); }
+  .flash { position: absolute; inset: 0; background: #ff2d44; opacity: 0; pointer-events: none; z-index: 6; }
+
+  .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center; padding: 28px; z-index: 10; background: radial-gradient(circle at 50% 30%, rgba(255,106,61,0.16), transparent 60%), rgba(6,5,12,0.6); }
+  .overlay.hidden { display: none; }
+  .title { font-size: 34px; font-weight: 900; letter-spacing: 0.5px; background: linear-gradient(90deg,var(--accent),var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; margin: 0; }
+  .subtitle { color: var(--text-dim); font-size: 13.5px; font-weight: 500; max-width: 300px; line-height: 1.55; margin: 0; }
+
+  .target-card { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 12px 20px; }
+  .target-portrait { width: 48px; height: 48px; border-radius: 50%; background: #2a1030; display: flex; align-items: center; justify-content: center; font-size: 22px; border: 2px solid var(--accent2); }
+  .target-info { text-align: left; }
+  .target-label { font-size: 10px; letter-spacing: 1.5px; color: var(--text-dim); font-weight: 800; text-transform: uppercase; }
+  .target-name { font-size: 15px; font-weight: 800; }
+
+  .btn { appearance: none; border: none; outline: none; cursor: pointer; font-family: inherit; font-weight: 800; font-size: 16px; letter-spacing: 0.3px; color: #1a0c04; background: linear-gradient(135deg,var(--accent),var(--accent2)); padding: 13px 38px; border-radius: 999px; box-shadow: 0 8px 22px rgba(255,106,61,0.4), 0 0 0 1px rgba(255,255,255,0.08) inset; transition: transform 0.12s ease; }
+  .btn:active { transform: scale(0.95); }
+  .btn.ghost { background: rgba(255,255,255,0.08); color: var(--text); box-shadow: none; border: 1px solid rgba(255,255,255,0.15); font-size: 13px; padding: 10px 24px; }
+  .btn:disabled { opacity: 0.35; filter: grayscale(0.6); }
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+  .equip-grid { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; max-width: 360px; }
+  .weapon-card { width: 104px; background: var(--card); border: 2px solid var(--card-border); border-radius: 16px; padding: 12px 8px; display: flex; flex-direction: column; align-items: center; gap: 6px; cursor: pointer; font-family: inherit; color: var(--text); }
+  .weapon-card.selected { border-color: var(--accent); background: rgba(255,176,32,0.1); }
+  .weapon-card:disabled { opacity: 0.4; cursor: default; }
+  .weapon-icon { font-size: 26px; }
+  .weapon-name { font-size: 11.5px; font-weight: 800; }
+  .weapon-cost { font-size: 11px; font-weight: 700; color: var(--gold); }
+  .weapon-cost.free { color: var(--text-dim); }
+
+  .hero-grid { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; max-width: 320px; }
+  .hero-card { width: 64px; height: 64px; border-radius: 16px; border: 3px solid transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .hero-card.selected { border-color: var(--accent); }
+  .hero-card .swatch { width: 40px; height: 40px; border-radius: 10px; }
+
+  .panel { background: var(--panel); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 24px 28px; backdrop-filter: blur(6px); display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 340px; }
+  .result-label { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-dim); font-weight: 700; }
+  .result-cash { font-size: 44px; font-weight: 900; color: var(--gold); line-height: 1; }
+  .cash-balance { font-size: 11px; color: var(--text-dim); font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <div class="loading" id="loading">LOADING 3D ENGINE...</div>
+    <div class="flash" id="flash"></div>
+    <div id="popupLayer"></div>
+
+    <div class="hud" id="hud">
+      <div class="cash-pill"><div class="cash-icon">$</div><div class="cash-val" id="cashVal">0</div></div>
+      <div class="contract-pill">CONTRACT <span id="contractNum">1</span><span class="room" id="roomVal">Room 1/3</span></div>
+    </div>
+
+    <div class="controls" id="controls">
+      <div class="joy-zone" id="joyZone"></div>
+      <div class="joy-base" id="joyBase"><div class="joy-knob" id="joyKnob"></div></div>
+    </div>
+
+    <div class="overlay hidden" id="titleOverlay">
+      <h1 class="title">HITMAN CONTRACT</h1>
+      <p class="subtitle">Clear every room, collect the cash, gear up before each job.</p>
+      <div class="target-card">
+        <div class="target-portrait" id="targetPortrait">🎩</div>
+        <div class="target-info">
+          <div class="target-label">Contract <span id="titleContractNum">1</span></div>
+          <div class="target-name" id="targetName">Street Crew</div>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="playBtn">PLAY</button>
+      </div>
+      <button class="btn ghost" id="heroesBtn" style="margin-top:4px;">HEROES</button>
+    </div>
+
+    <div class="overlay hidden" id="heroesOverlay">
+      <h1 class="title" style="font-size:26px;">HEROES</h1>
+      <p class="subtitle">Pick your look. Purely cosmetic — same stats.</p>
+      <div class="hero-grid" id="heroGrid"></div>
+      <button class="btn ghost" id="heroesBackBtn">BACK</button>
+    </div>
+
+    <div class="overlay hidden" id="equipOverlay">
+      <h1 class="title" style="font-size:24px;">CHOOSE EQUIPMENT</h1>
+      <p class="subtitle" style="margin-bottom:-4px;">Only for this contract</p>
+      <div class="cash-pill" style="margin-bottom:4px;"><div class="cash-icon">$</div><div class="cash-val" id="equipCash">0</div></div>
+      <div class="equip-grid" id="equipGrid"></div>
+      <div class="btn-row">
+        <button class="btn" id="continueBtn">CONTINUE</button>
+      </div>
+      <button class="btn ghost" id="equipBackBtn">BACK</button>
+    </div>
+
+    <div class="overlay hidden" id="resultOverlay">
+      <div class="panel">
+        <div class="result-label" id="resultLabel">Contract Complete</div>
+        <div class="result-cash" id="resultCash">+0</div>
+        <div class="cash-balance" id="resultBalance">Balance: 0</div>
+        <div class="btn-row" style="margin-top:6px;">
+          <button class="btn" id="primaryBtn">NEXT CONTRACT</button>
+        </div>
+        <button class="btn ghost" id="homeBtn">HOME</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var stage = document.getElementById("stage");
+  var canvas = document.getElementById("game");
+  var loadingEl = document.getElementById("loading");
+  var hud = document.getElementById("hud");
+  var cashVal = document.getElementById("cashVal");
+  var contractNum = document.getElementById("contractNum");
+  var roomVal = document.getElementById("roomVal");
+  var flashEl = document.getElementById("flash");
+  var popupLayer = document.getElementById("popupLayer");
+  var controlsEl = document.getElementById("controls");
+  var joyZone = document.getElementById("joyZone");
+  var joyBase = document.getElementById("joyBase");
+  var joyKnob = document.getElementById("joyKnob");
+
+  var titleOverlay = document.getElementById("titleOverlay");
+  var heroesOverlay = document.getElementById("heroesOverlay");
+  var equipOverlay = document.getElementById("equipOverlay");
+  var resultOverlay = document.getElementById("resultOverlay");
+  var targetPortrait = document.getElementById("targetPortrait");
+  var targetName = document.getElementById("targetName");
+  var titleContractNum = document.getElementById("titleContractNum");
+  var heroGrid = document.getElementById("heroGrid");
+  var equipGrid = document.getElementById("equipGrid");
+  var equipCash = document.getElementById("equipCash");
+  var resultLabel = document.getElementById("resultLabel");
+  var resultCash = document.getElementById("resultCash");
+  var resultBalance = document.getElementById("resultBalance");
+  var primaryBtn = document.getElementById("primaryBtn");
+
+  var playBtn = document.getElementById("playBtn");
+  var heroesBtn = document.getElementById("heroesBtn");
+  var heroesBackBtn = document.getElementById("heroesBackBtn");
+  var continueBtn = document.getElementById("continueBtn");
+  var equipBackBtn = document.getElementById("equipBackBtn");
+  var homeBtn = document.getElementById("homeBtn");
+
+  if (typeof THREE === "undefined") {
+    loadingEl.textContent = "Couldn't load the 3D engine. Check your connection and reload.";
+    return;
+  }
+
+  // ================= Data =================
+  var WEAPONS = [
+    { key: "katana", name: "Katana", icon: "⚔️", cost: 0, kind: "melee", range: 1.5, damage: 1, cooldown: 0.42 },
+    { key: "pistol", name: "Pistol", icon: "🔫", cost: 200, kind: "ranged", range: 6.5, damage: 1, cooldown: 0.5, projSpeed: 15 },
+    { key: "ak47", name: "AK47", icon: "🔫", cost: 700, kind: "ranged", range: 7.5, damage: 1, cooldown: 0.13, projSpeed: 19 },
+    { key: "rpg", name: "RPG", icon: "💥", cost: 700, kind: "splash", range: 8.5, damage: 3, cooldown: 1.15, projSpeed: 11, splashRadius: 2.3 }
+  ];
+
+  var TARGET_NAMES = ["Street Crew", "Warehouse Gang", "Office Syndicate", "Smuggler Ring", "Casino Bosses", "Penthouse Cartel"];
+  var HERO_COLORS = [0xff8a3d, 0x4ef0e0, 0xff4d6d, 0xb06bff, 0x4ade80];
+
+  var CASH_KEY = "hitmanContractCash";
+  var CONTRACT_KEY = "hitmanContractNum";
+  var HERO_KEY = "hitmanContractHero";
+  var cash = 0, contractNumber = 1, heroIndex = 0;
+  try { cash = parseInt(localStorage.getItem(CASH_KEY), 10) || 0; } catch (e) {}
+  try { contractNumber = parseInt(localStorage.getItem(CONTRACT_KEY), 10) || 1; } catch (e) {}
+  try { heroIndex = parseInt(localStorage.getItem(HERO_KEY), 10) || 0; } catch (e) {}
+
+  function saveMeta() {
+    try {
+      localStorage.setItem(CASH_KEY, String(cash));
+      localStorage.setItem(CONTRACT_KEY, String(contractNumber));
+      localStorage.setItem(HERO_KEY, String(heroIndex));
+    } catch (e) {}
+  }
+
+  function contractConfig(n) {
+    return {
+      rooms: Math.min(3 + Math.floor(n / 2), 6),
+      enemiesPerRoom: Math.min(2 + Math.floor(n / 3), 5),
+      enemyHp: 1 + Math.floor((n - 1) / 3),
+      enemySpeedMul: 1 + (n - 1) * 0.04
+    };
+  }
+
+  function updateTitleScreen() {
+    titleContractNum.textContent = contractNumber;
+    targetName.textContent = TARGET_NAMES[(contractNumber - 1) % TARGET_NAMES.length];
+    cashVal.textContent = cash;
+  }
+
+  function buildHeroGrid() {
+    var html = "";
+    for (var i = 0; i < HERO_COLORS.length; i++) {
+      var c = "#" + HERO_COLORS[i].toString(16).padStart(6, "0");
+      html += '<button class="hero-card ' + (i === heroIndex ? "selected" : "") + '" data-i="' + i + '"><div class="swatch" style="background:' + c + '"></div></button>';
+    }
+    heroGrid.innerHTML = html;
+    heroGrid.querySelectorAll(".hero-card").forEach(function (b) {
+      b.addEventListener("click", function () {
+        heroIndex = parseInt(b.getAttribute("data-i"), 10);
+        saveMeta();
+        buildHeroGrid();
+        if (player.vis) applyHeroColor();
+      });
+    });
+  }
+
+  var selectedWeapon = "katana";
+  function buildEquipGrid() {
+    equipCash.textContent = cash;
+    var html = "";
+    WEAPONS.forEach(function (w) {
+      var affordable = cash >= w.cost;
+      var sel = selectedWeapon === w.key;
+      html += '<button class="weapon-card ' + (sel ? "selected" : "") + '" data-key="' + w.key + '" ' + (!affordable ? "disabled" : "") + '>' +
+        '<div class="weapon-icon">' + w.icon + '</div>' +
+        '<div class="weapon-name">' + w.name + '</div>' +
+        '<div class="weapon-cost ' + (w.cost === 0 ? "free" : "") + '">' + (w.cost === 0 ? "FREE" : "$" + w.cost) + '</div>' +
+        '</button>';
+    });
+    equipGrid.innerHTML = html;
+    equipGrid.querySelectorAll(".weapon-card:not([disabled])").forEach(function (b) {
+      b.addEventListener("click", function () {
+        selectedWeapon = b.getAttribute("data-key");
+        buildEquipGrid();
+      });
+    });
+  }
+
+  function showOverlay(el) {
+    [titleOverlay, heroesOverlay, equipOverlay, resultOverlay].forEach(function (o) { o.classList.add("hidden"); });
+    el.classList.remove("hidden");
+  }
+
+  function openTitle() {
+    updateTitleScreen();
+    showOverlay(titleOverlay);
+    hud.style.display = "none"; controlsEl.style.display = "none";
+  }
+  function openHeroes() { buildHeroGrid(); showOverlay(heroesOverlay); }
+  function openEquip() {
+    selectedWeapon = "katana";
+    buildEquipGrid();
+    showOverlay(equipOverlay);
+  }
+
+  playBtn.addEventListener("click", openEquip);
+  heroesBtn.addEventListener("click", openHeroes);
+  heroesBackBtn.addEventListener("click", openTitle);
+  equipBackBtn.addEventListener("click", openTitle);
+  continueBtn.addEventListener("click", function () {
+    var w = WEAPONS.filter(function (x) { return x.key === selectedWeapon; })[0];
+    if (cash < w.cost) return;
+    cash -= w.cost;
+    saveMeta();
+    startRun(w);
+  });
+  homeBtn.addEventListener("click", openTitle);
+
+  // ================= Three.js setup =================
+  var W = 0, H = 0, DPR = 1;
+
+  var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(48, 1, 0.1, 300);
+  var ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
+  var sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  sunLight.position.set(5, 14, 6);
+  scene.add(ambientLight, sunLight);
+  scene.background = new THREE.Color(0x1a1830);
+  scene.fog = new THREE.Fog(0x14101f, 14, 34);
+
+  var worldGroup = new THREE.Group(); scene.add(worldGroup);
+  var entitiesGroup = new THREE.Group(); scene.add(entitiesGroup);
+  var fxGroup = new THREE.Group(); scene.add(fxGroup);
+
+  function resize() {
+    var rect = stage.getBoundingClientRect();
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = rect.width; H = rect.height;
+    renderer.setPixelRatio(DPR);
+    renderer.setSize(W, H, false);
+    camera.aspect = W / H;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener("resize", resize);
+
+  // ---- shared geometry ----
+  var GEO_BOX = new THREE.BoxGeometry(1, 1, 1);
+  var GEO_BOX_TOP = new THREE.BoxGeometry(1, 1, 1); GEO_BOX_TOP.translate(0, -0.5, 0);
+  var GEO_CYL = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+  var GEO_CONE = new THREE.ConeGeometry(0.5, 1, 8);
+  var GEO_SPHERE = new THREE.SphereGeometry(0.5, 10, 8);
+
+  var matCache = {};
+  function solidMat(hex, rough, metal) {
+    var key = hex + "_" + rough + "_" + metal;
+    if (!matCache[key]) matCache[key] = new THREE.MeshStandardMaterial({ color: hex, roughness: rough, metalness: metal });
+    return matCache[key];
+  }
+  var STEEL_MAT = solidMat(0xdbe3f0, 0.3, 0.75);
+  var DARK_MAT = solidMat(0x2a2432, 0.7, 0.15);
+
+  function makeBlobShadow(radius) {
+    var m = new THREE.Mesh(new THREE.CircleGeometry(radius, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false }));
+    m.rotation.x = -Math.PI / 2;
+    m.position.y = 0.015;
+    return m;
+  }
+
+  // ---- character rig ----
+  function seg(parent, length, width, mat, xOff) {
+    var pivot = new THREE.Group(); pivot.position.set(xOff || 0, 0, 0); parent.add(pivot);
+    var mesh = new THREE.Mesh(GEO_BOX_TOP, mat);
+    mesh.scale.set(width, length, width * 0.82);
+    pivot.add(mesh);
+    var anchor = new THREE.Group(); anchor.position.set(0, -length, 0); pivot.add(anchor);
+    return { pivot: pivot, anchor: anchor };
+  }
+
+  function createCharacter(skinColor, outfitColor, maskColor, bulky, weaponKey) {
+    var sc = bulky ? 1.15 : 1;
+    var skinMat = solidMat(skinColor, 0.75, 0.05);
+    var outfitMat = solidMat(outfitColor, 0.7, 0.08);
+    var maskMat = solidMat(maskColor, 0.8, 0.02);
+    var eyeMat = solidMat(0xffffff, 0.3, 0.1);
+
+    var hipY = 0.5 * sc, shoulderOff = 0.3 * sc, headOff = 0.13 * sc, headR = 0.095 * sc;
+    var thighLen = 0.26 * sc, shinLen = 0.24 * sc, thighW = 0.085 * sc, shinW = 0.065 * sc;
+    var armLen1 = 0.17 * sc, armLen2 = 0.16 * sc, armW1 = 0.065 * sc, armW2 = 0.05 * sc;
+    var legXOff = 0.07 * sc;
+
+    var root = new THREE.Group();
+    root.add(makeBlobShadow(0.3 * sc));
+
+    var legHip = new THREE.Group(); legHip.position.set(0, hipY, 0); root.add(legHip);
+    var legR = seg(legHip, thighLen, thighW, outfitMat, legXOff);
+    var shinR = seg(legR.anchor, shinLen, shinW, skinMat, 0);
+    var legL = seg(legHip, thighLen, thighW, outfitMat, -legXOff);
+    var shinL = seg(legL.anchor, shinLen, shinW, skinMat, 0);
+
+    var bob = new THREE.Group(); bob.position.set(0, hipY, 0); root.add(bob);
+    var hipW = 0.17 * sc, shoulderW = 0.27 * sc, torsoD = 0.16 * sc;
+    var lowerTorso = new THREE.Mesh(GEO_BOX, outfitMat);
+    lowerTorso.scale.set(hipW, shoulderOff * 0.4, torsoD); lowerTorso.position.set(0, shoulderOff * 0.2, 0); bob.add(lowerTorso);
+    var upperTorso = new THREE.Mesh(GEO_BOX, outfitMat);
+    upperTorso.scale.set(shoulderW, shoulderOff * 0.66, torsoD); upperTorso.position.set(0, shoulderOff * 0.63, 0); bob.add(upperTorso);
+    var belt = new THREE.Mesh(GEO_BOX, maskMat);
+    belt.scale.set(hipW * 1.08, 0.035 * sc, torsoD * 1.08); belt.position.set(0, 0.015 * sc, 0); bob.add(belt);
+
+    var headGroup = new THREE.Group(); headGroup.position.set(0, shoulderOff + headOff, 0); bob.add(headGroup);
+    var headMesh = new THREE.Mesh(GEO_BOX, skinMat); headMesh.scale.set(headR * 1.7, headR * 1.7, headR * 1.5); headGroup.add(headMesh);
+    var maskMesh = new THREE.Mesh(GEO_BOX, maskMat); maskMesh.scale.set(headR * 1.76, headR * 0.5, headR * 1.3); maskMesh.position.set(0, headR * 0.65, 0.02 * sc); headGroup.add(maskMesh);
+    var eyeMesh = new THREE.Mesh(GEO_BOX, eyeMat); eyeMesh.scale.set(headR * 0.9, headR * 0.2, headR * 0.1); eyeMesh.position.set(0, headR * 0.05, headR * 0.82); headGroup.add(eyeMesh);
+
+    var shoulderGroup = new THREE.Group(); shoulderGroup.position.set(0, shoulderOff * 0.92, 0); bob.add(shoulderGroup);
+    var armR = seg(shoulderGroup, armLen1, armW1, outfitMat, shoulderW * 0.48);
+    var foreR = seg(armR.anchor, armLen2, armW2, skinMat, 0);
+    var armL = seg(shoulderGroup, armLen1, armW1, outfitMat, -shoulderW * 0.48);
+    var foreL = seg(armL.anchor, armLen2, armW2, skinMat, 0);
+
+    var weaponGroup = new THREE.Group(); foreR.anchor.add(weaponGroup);
+    buildWeaponMesh(weaponGroup, weaponKey, sc);
+
+    entitiesGroup.add(root);
+    return {
+      root: root, bob: bob,
+      legs: { R: { hip: legR.pivot, knee: shinR.pivot }, L: { hip: legL.pivot, knee: shinL.pivot } },
+      arms: { R: { shoulder: armR.pivot, elbow: foreR.pivot }, L: { shoulder: armL.pivot, elbow: foreL.pivot } },
+      weaponGroup: weaponGroup, scaleVal: sc, weaponKey: weaponKey
+    };
+  }
+
+  function buildWeaponMesh(group, key, sc) {
+    while (group.children.length) group.remove(group.children[0]);
+    if (key === "katana") {
+      var hilt = new THREE.Mesh(GEO_BOX, DARK_MAT); hilt.scale.set(0.07 * sc, 0.045 * sc, 0.03 * sc); hilt.position.set(0, -0.02 * sc, 0); group.add(hilt);
+      var grip = new THREE.Mesh(GEO_CYL, DARK_MAT); grip.scale.set(0.022 * sc, 0.07 * sc, 0.022 * sc); grip.position.set(0, 0.03 * sc, 0); group.add(grip);
+      var blade = new THREE.Mesh(GEO_BOX_TOP, STEEL_MAT); blade.scale.set(0.028 * sc, 0.4 * sc, 0.012 * sc); blade.position.set(0, -0.05 * sc, 0); group.add(blade);
+    } else if (key === "pistol") {
+      var body = new THREE.Mesh(GEO_BOX, DARK_MAT); body.scale.set(0.05 * sc, 0.12 * sc, 0.07 * sc); body.position.set(0, -0.05 * sc, 0.02 * sc); group.add(body);
+      var barrel = new THREE.Mesh(GEO_CYL, STEEL_MAT); barrel.rotation.z = Math.PI / 2; barrel.scale.set(0.025 * sc, 0.18 * sc, 0.025 * sc); barrel.position.set(0, -0.02 * sc, 0.12 * sc); group.add(barrel);
+    } else if (key === "ak47") {
+      var recv = new THREE.Mesh(GEO_BOX, DARK_MAT); recv.scale.set(0.05 * sc, 0.08 * sc, 0.4 * sc); recv.position.set(0, -0.02 * sc, 0.1 * sc); group.add(recv);
+      var bl = new THREE.Mesh(GEO_CYL, STEEL_MAT); bl.rotation.z = Math.PI / 2; bl.scale.set(0.028 * sc, 0.26 * sc, 0.028 * sc); bl.position.set(0, -0.01 * sc, 0.38 * sc); group.add(bl);
+      var mag = new THREE.Mesh(GEO_BOX, DARK_MAT); mag.scale.set(0.035 * sc, 0.18 * sc, 0.04 * sc); mag.position.set(0, -0.14 * sc, 0.12 * sc); mag.rotation.x = 0.3; group.add(mag);
+    } else if (key === "rpg") {
+      var tube = new THREE.Mesh(GEO_CYL, DARK_MAT); tube.rotation.z = Math.PI / 2; tube.scale.set(0.08 * sc, 0.55 * sc, 0.08 * sc); tube.position.set(0, 0, 0.2 * sc); group.add(tube);
+      var cone = new THREE.Mesh(GEO_CONE, solidMat(0x8a1020, 0.6, 0.1)); cone.rotation.z = -Math.PI / 2; cone.scale.set(0.09 * sc, 0.14 * sc, 0.09 * sc); cone.position.set(0, 0, 0.5 * sc); group.add(cone);
+    }
+  }
+
+  function legAngles(ph, amp) { return { thigh: Math.sin(ph) * 0.5 * amp, shin: Math.max(0, Math.sin(ph - 0.7)) * 0.95 * amp }; }
+
+  function animateCharacter(vis, phase, amp, swingPhase) {
+    var back = legAngles(phase + Math.PI, amp);
+    vis.legs.R.hip.rotation.x = legAngles(phase, amp).thigh;
+    vis.legs.R.knee.rotation.x = legAngles(phase, amp).shin;
+    vis.legs.L.hip.rotation.x = back.thigh;
+    vis.legs.L.knee.rotation.x = back.shin;
+    vis.arms.L.shoulder.rotation.x = Math.sin(phase + Math.PI) * 0.45 * amp;
+    vis.arms.L.elbow.rotation.x = Math.max(0, Math.sin(phase + Math.PI - 0.7)) * 0.5 * amp;
+
+    if (swingPhase >= 0) {
+      vis.arms.R.shoulder.rotation.x = -1.1 + swingPhase * 1.9;
+      vis.arms.R.elbow.rotation.x = 0.3;
+    } else {
+      vis.arms.R.shoulder.rotation.x = 0.25 + Math.sin(phase) * 0.1 * amp;
+      vis.arms.R.elbow.rotation.x = 0.4;
+    }
+    vis.bob.position.y = (0.5 * vis.scaleVal) + Math.max(0, Math.sin(phase * 2)) * 0.02 * amp;
+  }
+
+  function applyHeroColor() {
+    // recolor outfit meshes by rebuilding is overkill; swap material color directly
+    player.vis.bob.traverse(function (o) {
+      if (o.isMesh && o.material && o.material === playerOutfitMat) { /* same material shared, color already applied */ }
+    });
+  }
+
+  // ---- props ----
+  var PROP_MATS = {
+    desk: solidMat(0x6b7a94, 0.75, 0.1), deskTop: solidMat(0x8a97ac, 0.6, 0.1),
+    shelf: solidMat(0xe8e4da, 0.7, 0.05), shelfDark: solidMat(0xc9c3b4, 0.7, 0.05),
+    pot: solidMat(0xb86a3a, 0.8, 0), leaf: solidMat(0x2d8a4e, 0.7, 0),
+    crate: solidMat(0x6b4a2a, 0.9, 0)
+  };
+  function makeProp(type, scale) {
+    var g = new THREE.Group();
+    if (type === "desk") {
+      var top = new THREE.Mesh(GEO_BOX, PROP_MATS.deskTop); top.scale.set(1.1 * scale, 0.08 * scale, 0.6 * scale); top.position.y = 0.5 * scale; g.add(top);
+      [-1, 1].forEach(function (sx) { [-1, 1].forEach(function (sz) {
+        var leg = new THREE.Mesh(GEO_BOX, PROP_MATS.desk); leg.scale.set(0.06 * scale, 0.5 * scale, 0.06 * scale); leg.position.set(sx * 0.5 * scale, 0.25 * scale, sz * 0.25 * scale); g.add(leg);
+      }); });
+    } else if (type === "shelf") {
+      var back = new THREE.Mesh(GEO_BOX, PROP_MATS.shelf); back.scale.set(0.9 * scale, 1.3 * scale, 0.3 * scale); back.position.y = 0.65 * scale; g.add(back);
+      for (var i = 1; i < 3; i++) { var shelf = new THREE.Mesh(GEO_BOX, PROP_MATS.shelfDark); shelf.scale.set(0.85 * scale, 0.04 * scale, 0.28 * scale); shelf.position.y = i * 0.4 * scale; g.add(shelf); }
+    } else if (type === "plant") {
+      var pot = new THREE.Mesh(GEO_CYL, PROP_MATS.pot); pot.scale.set(0.3 * scale, 0.3 * scale, 0.3 * scale); pot.position.y = 0.15 * scale; g.add(pot);
+      var leaf1 = new THREE.Mesh(GEO_SPHERE, PROP_MATS.leaf); leaf1.scale.set(0.3 * scale, 0.4 * scale, 0.3 * scale); leaf1.position.y = 0.55 * scale; g.add(leaf1);
+      var leaf2 = new THREE.Mesh(GEO_CONE, PROP_MATS.leaf); leaf2.scale.set(0.22 * scale, 0.5 * scale, 0.22 * scale); leaf2.position.y = 0.85 * scale; g.add(leaf2);
+    } else if (type === "crate") {
+      var box = new THREE.Mesh(GEO_BOX, PROP_MATS.crate); box.scale.set(0.5 * scale, 0.5 * scale, 0.5 * scale); box.position.y = 0.25 * scale; g.add(box);
+    }
+    g.add(makeBlobShadow(0.5 * scale));
+    return g;
+  }
+
+  // ================= Game state =================
+  var ROOM_WIDTH = 9, ROOM_DEPTH = 7, BAND_HALF = ROOM_DEPTH / 2 - 0.6;
+  var state = "menu";
+  var player = {
+    x: 2.2, z: 0, speed: 3.6, collisionR: 0.26, facing: 0,
+    hp: 5, maxHp: 5, walkPhase: 0, swingT: 0, cooldown: 0, moving: false, vis: null, weapon: null
+  };
+  var playerOutfitMat = null, playerSkinMat = null, playerMaskMat = null;
+  var camTarget = new THREE.Vector3();
+  var rooms = [], enemies = [], particles = [], projectiles = [], cashPickups = [];
+  var config, currentRoomIndex, roomsCleared, levelLength, runCashEarned, missionEnded;
+  var clock = new THREE.Clock();
+
+  function rand(min, max) { return min + Math.random() * (max - min); }
+  function clearGroup(group) { while (group.children.length) group.remove(group.children[0]); }
+
+  function buildLevel() {
+    clearGroup(worldGroup);
+    rooms = [];
+    roomsCleared = [];
+    levelLength = config.rooms * ROOM_WIDTH;
+
+    var floorMat = solidMat(0x241d33, 0.95, 0);
+    var wallMat = solidMat(0x362a4a, 0.8, 0);
+    var doorGlowMat = new THREE.MeshBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0.5 });
+
+    var floor = new THREE.Mesh(new THREE.PlaneGeometry(levelLength + 4, ROOM_DEPTH), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(levelLength / 2, 0, 0);
+    worldGroup.add(floor);
+
+    [-1, 1].forEach(function (side) {
+      var wall = new THREE.Mesh(GEO_BOX, wallMat);
+      wall.scale.set(levelLength + 4, 2.6, 0.3);
+      wall.position.set(levelLength / 2, 1.3, side * (ROOM_DEPTH / 2 + 0.15));
+      worldGroup.add(wall);
+    });
+
+    var propTypes = ["desk", "shelf", "plant", "crate"];
+    for (var r = 0; r < config.rooms; r++) {
+      var roomX0 = r * ROOM_WIDTH;
+      rooms.push({ index: r, x0: roomX0, x1: roomX0 + ROOM_WIDTH, cleared: false, enemyIds: [] });
+      roomsCleared.push(false);
+
+      // cross wall with doorway gap (not for the very first room's entry side)
+      if (r > 0) {
+        var gapHalf = 1.1;
+        [-1, 1].forEach(function (dz) {
+          var segW = (ROOM_DEPTH / 2) - gapHalf;
+          var seg = new THREE.Mesh(GEO_BOX, wallMat);
+          seg.scale.set(0.3, 2.6, segW);
+          seg.position.set(roomX0, 1.3, dz * (gapHalf + segW / 2));
+          worldGroup.add(seg);
+        });
+        var glow = new THREE.Mesh(GEO_BOX, doorGlowMat);
+        glow.scale.set(0.08, 2.2, gapHalf * 2);
+        glow.position.set(roomX0, 1.1, 0);
+        worldGroup.add(glow);
+      }
+
+      // decoration
+      var propCount = 2 + Math.floor(Math.random() * 2);
+      for (var p = 0; p < propCount; p++) {
+        var type = propTypes[Math.floor(Math.random() * propTypes.length)];
+        var px = roomX0 + rand(1.5, ROOM_WIDTH - 1.5);
+        var pz = (Math.random() < 0.5 ? -1 : 1) * rand(BAND_HALF * 0.55, BAND_HALF * 0.95);
+        var prop = makeProp(type, rand(0.85, 1.15));
+        prop.position.set(px, 0, pz);
+        prop.rotation.y = Math.random() * Math.PI * 2;
+        worldGroup.add(prop);
+      }
+    }
+
+    // end gate marker
+    var gateMat = solidMat(0x1a1420, 0.8, 0);
+    [-1, 1].forEach(function (side) {
+      var p = new THREE.Mesh(GEO_CYL, gateMat); p.scale.set(0.25, 2.8, 0.25); p.position.set(levelLength - 0.6, 1.4, side * (ROOM_DEPTH / 2 - 0.3)); worldGroup.add(p);
+    });
+  }
+
+  function spawnEnemyAt(x, z, hp) {
+    var e = {
+      x: x, z: z, homeX: x, homeZ: z, hp: hp, maxHp: hp,
+      speed: 1.1 * config.enemySpeedMul, collisionR: 0.26, facing: Math.PI,
+      attackRange: 0.9, attackCooldown: rand(0, 0.6), walkPhase: Math.random() * 10, flash: 0, alive: true
+    };
+    e.vis = createCharacter(0xcf9f78, 0x3a3a52, 0x1a1624, false, "katana");
+    enemies.push(e);
+    return e;
+  }
+
+  function populateRoom(idx) {
+    var room = rooms[idx];
+    for (var i = 0; i < config.enemiesPerRoom; i++) {
+      var ex = room.x0 + rand(2.5, ROOM_WIDTH - 1.5);
+      var ez = rand(-BAND_HALF * 0.8, BAND_HALF * 0.8);
+      var e = spawnEnemyAt(ex, ez, config.enemyHp);
+      room.enemyIds.push(e);
+    }
+  }
+
+  function resetGame(weapon) {
+    resize();
+    config = contractConfig(contractNumber);
+    buildLevel();
+
+    clearGroup(entitiesGroup);
+    clearGroup(fxGroup);
+    enemies = []; particles = []; projectiles = []; cashPickups = [];
+
+    player.x = 2.2; player.z = 0; player.facing = 0;
+    player.hp = player.maxHp; player.walkPhase = 0; player.swingT = 0; player.cooldown = 0; player.moving = false;
+    player.weapon = weapon;
+
+    var hc = HERO_COLORS[heroIndex];
+    playerOutfitMat = solidMat(hc, 0.7, 0.08);
+    playerSkinMat = solidMat(0xe4bb92, 0.75, 0.05);
+    playerMaskMat = solidMat(0x1a1420, 0.8, 0.02);
+    player.vis = createCharacter(0xe4bb92, hc, 0x1a1420, false, weapon.key);
+
+    currentRoomIndex = 0;
+    populateRoom(0);
+    runCashEarned = 0; missionEnded = false;
+    cashVal.textContent = cash;
+    contractNum.textContent = contractNumber;
+    roomVal.textContent = "Room 1/" + config.rooms;
+    popupLayer.innerHTML = "";
+
+    camTarget.set(player.x, 1, player.z);
+    camera.position.set(player.x + 1.5, 10.5, 7);
+    camera.lookAt(camTarget);
+  }
+
+  function startRun(weapon) {
+    resetGame(weapon);
+    state = "playing";
+    showOverlay(titleOverlay); titleOverlay.classList.add("hidden");
+    hud.style.display = "flex"; controlsEl.style.display = "block";
+    clock.getDelta();
+    requestAnimationFrame(loop);
+  }
+
+  function worldToScreen(x, y, z) {
+    var v = new THREE.Vector3(x, y, z).project(camera);
+    return { x: (v.x * 0.5 + 0.5) * W, y: (1 - (v.y * 0.5 + 0.5)) * H };
+  }
+
+  function popupText(x, y, z, text, color) {
+    var p = worldToScreen(x, y, z);
+    var el = document.createElement("div");
+    el.className = "popup";
+    el.textContent = text;
+    el.style.left = p.x + "px"; el.style.top = p.y + "px";
+    if (color) el.style.color = color;
+    popupLayer.appendChild(el);
+    var t0 = performance.now();
+    function anim() {
+      var dt = (performance.now() - t0) / 600;
+      if (dt >= 1) { el.remove(); return; }
+      el.style.transform = "translate(-50%,-50%) translateY(" + (-22 * dt) + "px)";
+      el.style.opacity = String(1 - dt);
+      requestAnimationFrame(anim);
+    }
+    requestAnimationFrame(anim);
+  }
+
+  function spawnParticles(x, y, z, color, n) {
+    for (var i = 0; i < n; i++) {
+      var a = Math.random() * Math.PI * 2;
+      var s = 1.4 + Math.random() * 2;
+      var mesh = new THREE.Mesh(GEO_BOX, new THREE.MeshBasicMaterial({ color: color, transparent: true }));
+      mesh.scale.set(0.045, 0.045, 0.045);
+      mesh.position.set(x, y, z);
+      fxGroup.add(mesh);
+      particles.push({ mesh: mesh, vx: Math.cos(a) * s, vz: Math.sin(a) * s, vy: 2 + Math.random() * 1.4, life: 0.35 + Math.random() * 0.25, t: 0 });
+    }
+  }
+
+  function spawnCash(x, z, amount) {
+    var n = Math.min(3, Math.max(1, Math.round(amount / 3)));
+    for (var i = 0; i < n; i++) {
+      var mesh = new THREE.Mesh(GEO_BOX, solidMat(0x4ade80, 0.5, 0));
+      mesh.scale.set(0.18, 0.02, 0.1);
+      var px = x + rand(-0.5, 0.5), pz = z + rand(-0.5, 0.5);
+      mesh.position.set(px, 0.05, pz);
+      fxGroup.add(mesh);
+      cashPickups.push({ mesh: mesh, x: px, z: pz, value: Math.round(amount / n), spin: Math.random() * 6 });
+    }
+  }
+
+  function flashHit() {
+    flashEl.style.transition = "none"; flashEl.style.opacity = "0.4";
+    requestAnimationFrame(function () {
+      flashEl.style.transition = "opacity 0.35s"; flashEl.style.opacity = "0";
+    });
+  }
+
+  function damagePlayer(dmg) {
+    player.hp -= dmg;
+    flashHit();
+    popupText(player.x, 1.6, player.z, "-" + dmg, "#ff4d6d");
+    spawnParticles(player.x, 1, player.z, 0xff4d6d, 10);
+    if (player.hp <= 0) endRun(false);
+  }
+
+  function killEnemy(e) {
+    e.alive = false;
+    entitiesGroup.remove(e.vis.root);
+    var idx = enemies.indexOf(e);
+    if (idx !== -1) enemies.splice(idx, 1);
+    var reward = 2 + Math.floor(Math.random() * 3);
+    runCashEarned += reward;
+    cash += reward;
+    cashVal.textContent = cash;
+    popupText(e.x, 1.4, e.z, "+" + reward, "#4ade80");
+    spawnParticles(e.x, 1, e.z, 0x3a3a52, 12);
+    spawnCash(e.x, e.z, reward);
+    checkRoomClear();
+  }
+
+  function checkRoomClear() {
+    var room = rooms[currentRoomIndex];
+    var remaining = room.enemyIds.filter(function (e) { return e.alive; });
+    if (remaining.length === 0 && !roomsCleared[currentRoomIndex]) {
+      roomsCleared[currentRoomIndex] = true;
+    }
+  }
+
+  function endRun(won) {
+    if (missionEnded) return;
+    missionEnded = true;
+    state = won ? "won" : "dead";
+    setTimeout(function () {
+      if (won) { contractNumber++; saveMeta(); }
+      resultLabel.textContent = won ? "Contract Complete" : "Contract Failed";
+      resultCash.textContent = "+" + runCashEarned;
+      resultBalance.textContent = "Balance: " + cash;
+      primaryBtn.textContent = won ? "NEXT CONTRACT" : "RETRY CONTRACT";
+      primaryBtn.onclick = won ? openEquipNext : function () { startRun(player.weapon); };
+      showOverlay(resultOverlay);
+      hud.style.display = "none"; controlsEl.style.display = "none";
+    }, won ? 350 : 420);
+  }
+  function openEquipNext() { openEquip(); }
+
+  // ---------- Input ----------
+  var keys = {};
+  window.addEventListener("keydown", function (e) { keys[e.key.toLowerCase()] = true; });
+  window.addEventListener("keyup", function (e) { keys[e.key.toLowerCase()] = false; });
+  function keyboardVector() {
+    var x = 0, y = 0;
+    if (keys["arrowleft"] || keys["a"]) x -= 1;
+    if (keys["arrowright"] || keys["d"]) x += 1;
+    if (keys["arrowup"] || keys["w"]) y -= 1;
+    if (keys["arrowdown"] || keys["s"]) y += 1;
+    return { x: x, y: y };
+  }
+
+  var touchVec = { x: 0, y: 0 };
+  var joyActive = false, joyOrigin = { x: 0, y: 0 };
+  var JOY_R = 50;
+  function stageLocal(clientX, clientY) {
+    var rect = stage.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+  joyZone.addEventListener("pointerdown", function (e) {
+    var p = stageLocal(e.clientX, e.clientY);
+    joyOrigin = p; joyActive = true;
+    joyBase.style.left = p.x + "px"; joyBase.style.top = p.y + "px"; joyBase.style.display = "block";
+    joyKnob.style.left = p.x + "px"; joyKnob.style.top = p.y + "px";
+    try { joyZone.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  joyZone.addEventListener("pointermove", function (e) {
+    if (!joyActive) return;
+    var p = stageLocal(e.clientX, e.clientY);
+    var dx = p.x - joyOrigin.x, dy = p.y - joyOrigin.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    var clamped = Math.min(dist, JOY_R);
+    var ang = Math.atan2(dy, dx);
+    var kx = joyOrigin.x + Math.cos(ang) * clamped, ky = joyOrigin.y + Math.sin(ang) * clamped;
+    joyKnob.style.left = kx + "px"; joyKnob.style.top = ky + "px";
+    touchVec.x = (kx - joyOrigin.x) / JOY_R; touchVec.y = (ky - joyOrigin.y) / JOY_R;
+  });
+  function endJoy() { joyActive = false; joyBase.style.display = "none"; touchVec.x = 0; touchVec.y = 0; }
+  joyZone.addEventListener("pointerup", endJoy);
+  joyZone.addEventListener("pointercancel", endJoy);
+
+  // ---------- Loop ----------
+  function loop() {
+    if (state !== "playing") { renderer.render(scene, camera); return; }
+    var dt = Math.min(clock.getDelta(), 0.05);
+    update(dt);
+    renderer.render(scene, camera);
+    requestAnimationFrame(loop);
+  }
+
+  function roomBoundsFor(x) {
+    for (var i = 0; i < rooms.length; i++) if (x >= rooms[i].x0 && x < rooms[i].x1) return i;
+    return rooms.length - 1;
+  }
+
+  function update(dt) {
+    var kb = keyboardVector();
+    var ix = joyActive ? touchVec.x : kb.x;
+    var iz = joyActive ? touchVec.y : kb.y;
+    var len = Math.sqrt(ix * ix + iz * iz);
+    if (len > 1) { ix /= len; iz /= len; }
+    player.moving = len > 0.08;
+
+    if (player.cooldown > 0) player.cooldown -= dt;
+    if (player.swingT > 0) player.swingT -= dt;
+
+    if (player.moving) {
+      var nx = player.x + ix * player.speed * dt;
+      var nz = player.z + iz * player.speed * dt;
+      // block crossing into next room if current room not cleared
+      var targetRoom = roomBoundsFor(nx);
+      if (targetRoom > currentRoomIndex && !roomsCleared[currentRoomIndex]) {
+        nx = rooms[currentRoomIndex].x1 - 0.15;
+      } else if (targetRoom !== currentRoomIndex) {
+        currentRoomIndex = targetRoom;
+        if (!roomsCleared[currentRoomIndex] && rooms[currentRoomIndex].enemyIds.filter(function (e) { return e.alive; }).length === 0 && rooms[currentRoomIndex].enemyIds.length === 0) {
+          populateRoom(currentRoomIndex);
+        }
+        roomVal.textContent = "Room " + (currentRoomIndex + 1) + "/" + config.rooms;
+      }
+      nx = Math.max(0.6, Math.min(levelLength - 0.6, nx));
+      nz = Math.max(-BAND_HALF, Math.min(BAND_HALF, nz));
+      player.x = nx; player.z = nz;
+      player.facing = Math.atan2(ix, iz);
+      player.walkPhase += dt * 9;
+    }
+
+    // win check: reached end of final room and it's cleared
+    if (currentRoomIndex === rooms.length - 1 && roomsCleared[currentRoomIndex] && player.x > levelLength - 1.4) {
+      endRun(true); return;
+    }
+
+    // --- auto combat: find nearest living enemy in range ---
+    var weapon = player.weapon;
+    var target = null, bestDist = Infinity;
+    enemies.forEach(function (e) {
+      var d = Math.hypot(e.x - player.x, e.z - player.z);
+      if (d < bestDist) { bestDist = d; target = e; }
+    });
+    if (target && bestDist <= weapon.range && player.cooldown <= 0) {
+      player.facing = Math.atan2(target.x - player.x, target.z - player.z);
+      fireWeapon(target);
+      player.cooldown = weapon.cooldown;
+      player.swingT = Math.min(weapon.cooldown, 0.22);
+    }
+
+    // --- enemies ---
+    enemies.forEach(function (e) {
+      if (e.flash > 0) e.flash -= dt;
+      if (e.attackCooldown > 0) e.attackCooldown -= dt;
+      var dx = player.x - e.x, dz = player.z - e.z;
+      var dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist < e.attackRange) {
+        e.facing = Math.atan2(dx, dz);
+        if (e.attackCooldown <= 0) { damagePlayer(1); e.attackCooldown = 1.1; }
+      } else if (dist < 5.5) {
+        var nx2 = dx / dist, nz2 = dz / dist;
+        e.x += nx2 * e.speed * dt; e.z += nz2 * e.speed * dt;
+        e.facing = Math.atan2(nx2, nz2);
+        e.walkPhase += dt * 8;
+      }
+    });
+
+    // --- projectiles ---
+    for (var i = projectiles.length - 1; i >= 0; i--) {
+      var pr = projectiles[i];
+      pr.t += dt;
+      var alive = pr.target && pr.target.alive;
+      if (!alive) {
+        pr.x += pr.dirX * pr.speed * dt; pr.z += pr.dirZ * pr.speed * dt;
+      } else {
+        var ddx = pr.target.x - pr.x, ddz = pr.target.z - pr.z;
+        var dd = Math.hypot(ddx, ddz);
+        var step = pr.speed * dt;
+        if (dd <= step + 0.15) {
+          hitWithProjectile(pr);
+          fxGroup.remove(pr.mesh);
+          projectiles.splice(i, 1);
+          continue;
+        }
+        pr.x += (ddx / dd) * step; pr.z += (ddz / dd) * step;
+      }
+      pr.mesh.position.set(pr.x, 0.9, pr.z);
+      pr.mesh.rotation.y += dt * 20;
+      if (pr.t > 2.2) { fxGroup.remove(pr.mesh); projectiles.splice(i, 1); }
+    }
+
+    // --- particles ---
+    for (i = particles.length - 1; i >= 0; i--) {
+      var p = particles[i];
+      p.t += dt;
+      if (p.t >= p.life) { fxGroup.remove(p.mesh); particles.splice(i, 1); continue; }
+      p.mesh.position.x += p.vx * dt; p.mesh.position.z += p.vz * dt;
+      p.vy -= 6.5 * dt;
+      p.mesh.position.y = Math.max(0.05, p.mesh.position.y + p.vy * dt);
+      p.mesh.material.opacity = 1 - p.t / p.life;
+    }
+
+    // --- cash pickups ---
+    for (i = cashPickups.length - 1; i >= 0; i--) {
+      var cp = cashPickups[i];
+      cp.spin += dt * 3;
+      cp.mesh.rotation.y = cp.spin;
+      var pd = Math.hypot(cp.x - player.x, cp.z - player.z);
+      if (pd < 0.9) {
+        cash += cp.value; runCashEarned += cp.value; cashVal.textContent = cash;
+        fxGroup.remove(cp.mesh);
+        cashPickups.splice(i, 1);
+      }
+    }
+
+    // --- visuals ---
+    player.vis.root.position.set(player.x, 0, player.z);
+    player.vis.root.rotation.y = player.facing;
+    var swingPhase = player.swingT > 0 ? (1 - player.swingT / Math.max(0.01, Math.min(weapon.cooldown, 0.22))) : -1;
+    animateCharacter(player.vis, player.walkPhase, player.moving ? 1 : 0.1, swingPhase);
+
+    enemies.forEach(function (e) {
+      e.vis.root.position.set(e.x, 0, e.z);
+      e.vis.root.rotation.y = e.facing;
+      animateCharacter(e.vis, e.walkPhase, Math.hypot(player.x - e.x, player.z - e.z) < 5.5 ? 1 : 0.1, -1);
+      var lit = e.flash > 0;
+      e.vis.root.traverse(function (o) { if (o.isMesh && o.material && o.material.emissive !== undefined) o.material.emissive.setHex(lit ? 0x552211 : 0x000000); });
+    });
+
+    camTarget.x += (player.x - camTarget.x) * Math.min(dt * 5, 1);
+    camTarget.z += (player.z - camTarget.z) * Math.min(dt * 5, 1);
+    camera.position.set(camTarget.x + 1.5, 10.5, 7);
+    camera.lookAt(camTarget.x, 0.5, camTarget.z * 0.6);
+  }
+
+  function fireWeapon(target) {
+    var weapon = player.weapon;
+    var origin = { x: player.x + Math.sin(player.facing) * 0.3, y: 0.9, z: player.z + Math.cos(player.facing) * 0.3 };
+    if (weapon.kind === "melee") {
+      target.hp -= weapon.damage; target.flash = 0.15;
+      spawnParticles(target.x, 1, target.z, 0xcf9f78, 5);
+      if (target.hp <= 0) killEnemy(target);
+      return;
+    }
+    var color = weapon.kind === "splash" ? 0xff6a3d : 0xffd84e;
+    var mesh = new THREE.Mesh(weapon.kind === "splash" ? GEO_SPHERE : new THREE.OctahedronGeometry(0.08, 0), new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.5 }));
+    if (weapon.kind === "splash") mesh.scale.set(0.12, 0.12, 0.12);
+    mesh.position.set(origin.x, origin.y, origin.z);
+    fxGroup.add(mesh);
+    var dx = target.x - origin.x, dz = target.z - origin.z;
+    var dd = Math.hypot(dx, dz) || 1;
+    projectiles.push({ mesh: mesh, x: origin.x, z: origin.z, target: target, dirX: dx / dd, dirZ: dz / dd, speed: weapon.projSpeed, t: 0, weapon: weapon });
+  }
+
+  function hitWithProjectile(pr) {
+    var weapon = pr.weapon;
+    if (weapon.kind === "splash") {
+      spawnParticles(pr.x, 1, pr.z, 0xff6a3d, 22);
+      popupText(pr.x, 1.6, pr.z, "BOOM", "#ff6a3d");
+      enemies.slice().forEach(function (e) {
+        var d = Math.hypot(e.x - pr.x, e.z - pr.z);
+        if (d <= weapon.splashRadius) {
+          e.hp -= weapon.damage; e.flash = 0.2;
+          if (e.hp <= 0) killEnemy(e);
+        }
+      });
+    } else {
+      if (pr.target && pr.target.alive) {
+        pr.target.hp -= weapon.damage; pr.target.flash = 0.15;
+        spawnParticles(pr.x, 1, pr.z, 0xcf9f78, 8);
+        if (pr.target.hp <= 0) killEnemy(pr.target);
+      }
+    }
+  }
+
+  resize();
+  loadingEl.style.display = "none";
+  openTitle();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>
