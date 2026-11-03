@@ -1,0 +1,408 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+//
+// 10 AM Open – Liquidity Draw Strategy (NQ / MNQ futures, 1-minute chart)
+//
+// Core idea (built from the "10 AM open" concept, not anyone's exact system):
+//   1. Skip the 09:30 opening-bell chaos. Mark the 10:00 New York open.
+//   2. Wait for price to manipulate to one or both sides of the 10 AM open.
+//   3. Check which draws on liquidity have already been taken:
+//        - Previous futures-session High/Low (18:00 -> 16:00 ET, not midnight-to-midnight)
+//        - Overnight High/Low (16:00 prior day -> 09:30 ET, i.e. post + pre-market)
+//   4. Trade TOWARD the nearest level that has NOT been taken.
+//   5. Enter on rejection blocks (wick rejections at swing points), on a rejection
+//      of the 10 AM open itself, or on a full mitigation of an opposing block
+//      (continuation).
+//
+// Use on an ETH (electronic / extended hours) chart, otherwise the overnight and
+// futures-session levels cannot be built. Not financial advice. Backtest first.
+
+//@version=6
+strategy("10 AM Open – Liquidity Draw Strategy", shorttitle = "10AM Open", overlay = true,
+     initial_capital = 50000, default_qty_type = strategy.fixed, default_qty_value = 1,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 2.0, slippage = 2,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+const string TZ = "America/New_York"
+
+// ───────────────────────────── Inputs ─────────────────────────────
+grpS = "Sessions (New York time)"
+futSess   = input.session("1800-1600", "Futures session (Prev H/L)", group = grpS, tooltip = "Previous session high/low is built from the futures session (6 PM to 4 PM ET), not the calendar day.")
+onSess    = input.session("1600-0930", "Overnight window (ON H/L)", group = grpS, tooltip = "Post-market + pre-market: 4 PM prior day to 9:30 AM.")
+tenSess   = input.session("1000-1600", "10 AM open → projection end", group = grpS)
+tradeSess = input.session("1000-1200", "Window for NEW entries", group = grpS)
+holdSess  = input.session("0930-1555", "Hold window (flat outside)", group = grpS)
+waitMin   = input.int(0, "Wait N minutes after 10:00", minval = 0, group = grpS)
+
+grpM = "Manipulation filter"
+manipMode  = input.string("Either side", "Require sweep of 10 AM open", options = ["Off", "Either side", "Both sides"], group = grpM)
+manipTicks = input.int(8, "Min sweep beyond 10 AM open (ticks)", minval = 0, group = grpM)
+
+grpL = "Draws on liquidity (targets)"
+usePD     = input.bool(true, "Use previous session High/Low", group = grpL)
+useON     = input.bool(true, "Use overnight High/Low", group = grpL)
+biasMode  = input.string("Nearest untaken", "Direction rule", options = ["Nearest untaken", "Any untaken in direction"], group = grpL, tooltip = "Nearest untaken: only trade toward whichever untaken level is closest. Any: allow a trade toward any untaken level.")
+
+grpRB = "Rejection blocks"
+rbTFStr   = input.string("1", "Block timeframe", options = ["Chart", "1", "3", "5", "15"], group = grpRB, tooltip = "Must be >= chart timeframe. Default 1-minute; 5 / 15 work on the 1-minute chart.")
+swingLen  = input.int(3, "Swing strength (bars each side)", minval = 1, group = grpRB)
+wickRatio = input.float(1.5, "Min wick-to-body ratio", minval = 0.1, step = 0.1, group = grpRB)
+minWickTk = input.int(4, "Min wick size (ticks)", minval = 0, group = grpRB)
+maxBlocks = input.int(20, "Max blocks kept", minval = 1, maxval = 200, group = grpRB)
+
+grpE = "Entries"
+useRBRej  = input.bool(true, "Rejection-block rejection", group = grpE)
+useTenRej = input.bool(true, "Rejection of the 10 AM open", group = grpE)
+useMit    = input.bool(true, "Full mitigation (continuation)", group = grpE)
+
+grpR = "Risk"
+stopBufTk = input.int(4, "Stop buffer (ticks)", minval = 0, group = grpR)
+maxStopPt = input.float(40.0, "Max stop distance (points, 0 = off)", minval = 0, group = grpR)
+minRR     = input.float(1.5, "Min reward:risk to the target", minval = 0.1, step = 0.1, group = grpR)
+maxTrades = input.int(2, "Max trades per day", minval = 1, group = grpR)
+
+grpV = "Visuals"
+cTen   = input.color(color.new(color.orange, 0), "10 AM open", group = grpV)
+cPD    = input.color(color.new(color.blue, 0), "Prev session H/L", group = grpV)
+cON    = input.color(color.new(color.purple, 0), "Overnight H/L", group = grpV)
+cBull  = input.color(color.new(color.teal, 80), "Bullish block", group = grpV)
+cBear  = input.color(color.new(color.red, 80), "Bearish block", group = grpV)
+cMit   = input.color(color.new(color.gray, 88), "Mitigated block", group = grpV)
+showTb = input.bool(true, "Show status table", group = grpV)
+
+// ───────────────────────────── Helpers ─────────────────────────────
+inS(string s) =>
+    not na(time(timeframe.period, s + ":1234567", TZ))
+
+nyTime(int h, int m) =>
+    timestamp(TZ, year(time, TZ), month(time, TZ), dayofmonth(time, TZ), h, m)
+
+newLevel(float y, int t1, int t2, color c, string txt) =>
+    line ln = line.new(t1, y, t2, y, xloc = xloc.bar_time, color = c, width = 1)
+    label lb = label.new(t2, y, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color(na), textcolor = c, size = size.small)
+    [ln, lb]
+
+markTaken(line ln, label lb, string txt) =>
+    if not na(ln)
+        line.set_style(ln, line.style_dotted)
+    if not na(lb)
+        label.set_text(lb, txt + " ✓")
+
+float tick = syminfo.mintick
+
+// ───────────────────── Previous futures session H/L ─────────────────────
+bool inFut    = inS(futSess)
+bool futStart = inFut and not inFut[1]
+
+var float sessH = na
+var float sessL = na
+var int   sessHT = na
+var int   sessLT = na
+var float pdh = na
+var float pdl = na
+var bool  pdhTaken = false
+var bool  pdlTaken = false
+var line  pdhLn = na
+var line  pdlLn = na
+var label pdhLb = na
+var label pdlLb = na
+
+if futStart
+    if not na(sessH)
+        pdh := sessH
+        pdl := sessL
+        pdhTaken := false
+        pdlTaken := false
+        int endT = time + 22 * 3600000   // 18:00 -> 16:00 next day
+        [l1, b1] = newLevel(pdh, sessHT, endT, cPD, "PDH")
+        [l2, b2] = newLevel(pdl, sessLT, endT, cPD, "PDL")
+        pdhLn := l1, pdhLb := b1, pdlLn := l2, pdlLb := b2
+    sessH := high, sessL := low, sessHT := time, sessLT := time
+else if inFut
+    if na(sessH) or high > sessH
+        sessH := high, sessHT := time
+    if na(sessL) or low < sessL
+        sessL := low, sessLT := time
+
+if not na(pdh) and not pdhTaken and high >= pdh
+    pdhTaken := true
+    markTaken(pdhLn, pdhLb, "PDH")
+if not na(pdl) and not pdlTaken and low <= pdl
+    pdlTaken := true
+    markTaken(pdlLn, pdlLb, "PDL")
+
+// ───────────────────────────── Overnight H/L ─────────────────────────────
+bool inON    = inS(onSess)
+bool onStart = inON and not inON[1]
+bool onEnd   = not inON and inON[1]
+
+var float onAccH = na
+var float onAccL = na
+var int   onHT = na
+var int   onLT = na
+var float onh = na
+var float onl = na
+var bool  onhTaken = false
+var bool  onlTaken = false
+var line  onhLn = na
+var line  onlLn = na
+var label onhLb = na
+var label onlLb = na
+
+if onStart
+    onAccH := high, onAccL := low, onHT := time, onLT := time
+    onh := na, onl := na      // yesterday's overnight levels are stale now
+else if inON
+    if na(onAccH) or high > onAccH
+        onAccH := high, onHT := time
+    if na(onAccL) or low < onAccL
+        onAccL := low, onLT := time
+
+if onEnd and not na(onAccH)
+    onh := onAccH, onl := onAccL
+    onhTaken := false, onlTaken := false
+    int endT = nyTime(16, 0)
+    [l1, b1] = newLevel(onh, onHT, endT, cON, "ONH")
+    [l2, b2] = newLevel(onl, onLT, endT, cON, "ONL")
+    onhLn := l1, onhLb := b1, onlLn := l2, onlLb := b2
+
+if not na(onh) and not onhTaken and high >= onh
+    onhTaken := true
+    markTaken(onhLn, onhLb, "ONH")
+if not na(onl) and not onlTaken and low <= onl
+    onlTaken := true
+    markTaken(onlLn, onlLb, "ONL")
+
+// ───────────────────────────── 10 AM open ─────────────────────────────
+bool inTen    = inS(tenSess)
+bool tenStart = inTen and not inTen[1]
+
+var float tenOpen = na
+var int   tenTime = na
+var int   tenBar  = na
+var bool  sweptUp = false
+var bool  sweptDn = false
+var int   tradesToday = 0
+
+if tenStart
+    tenOpen := open, tenTime := time, tenBar := bar_index
+    sweptUp := false, sweptDn := false
+    tradesToday := 0
+    [tl, tlb] = newLevel(tenOpen, time, nyTime(16, 0), cTen, "10AM")
+
+if inTen and not na(tenOpen)
+    if high >= tenOpen + manipTicks * tick
+        sweptUp := true
+    if low <= tenOpen - manipTicks * tick
+        sweptDn := true
+
+bool manipOK = manipMode == "Off" ? true : manipMode == "Either side" ? (sweptUp or sweptDn) : (sweptUp and sweptDn)
+
+// ───────────────────────────── Rejection blocks ─────────────────────────────
+// Bearish block: swing high whose upper wick is large vs. its body. Zone = wick high -> body top.
+// Bullish block: swing low whose lower wick is large vs. its body. Zone = body bottom -> wick low.
+// `off` = 1 shifts everything one bar back for non-repainting higher-timeframe requests.
+rbDetect(int len, float ratio, float minWick, int off) =>
+    float ph = ta.pivothigh(high[off], len, len)
+    float pl = ta.pivotlow(low[off], len, len)
+    int   k  = len + off
+    float o  = open[k]
+    float c  = close[k]
+    float h  = high[k]
+    float l  = low[k]
+    float body = math.max(math.abs(c - o), syminfo.mintick)
+    float upW  = h - math.max(o, c)
+    float dnW  = math.min(o, c) - l
+    bool bear = not na(ph) and upW / body >= ratio and upW >= minWick
+    bool bull = not na(pl) and dnW / body >= ratio and dnW >= minWick
+    [bear ? h : na, bear ? math.max(o, c) : na, bull ? math.min(o, c) : na, bull ? l : na, time[k]]
+
+string rbTF   = rbTFStr == "Chart" ? timeframe.period : rbTFStr
+bool   sameTF = rbTF == timeframe.period
+
+[bt0, bb0, ut0, ub0, pt0] = rbDetect(swingLen, wickRatio, minWickTk * tick, 0)
+[bt1, bb1, ut1, ub1, pt1] = request.security(syminfo.tickerid, rbTF, rbDetect(swingLen, wickRatio, minWickTk * syminfo.mintick, 1), lookahead = barmerge.lookahead_on)
+
+float bearTop = sameTF ? bt0 : bt1
+float bearBot = sameTF ? bb0 : bb1
+float bullTop = sameTF ? ut0 : ut1
+float bullBot = sameTF ? ub0 : ub1
+int   pivT    = sameTF ? pt0 : pt1
+
+type RB
+    float top
+    float bot
+    bool  bull
+    int   born
+    bool  mitigated
+    box   bx
+
+var array<RB> blocks = array.new<RB>()
+var int lastBearT = na
+var int lastBullT = na
+
+addBlock(array<RB> arr, float top, float bot, bool isBull, int t, int cap) =>
+    box b = box.new(t, top, time, bot, xloc = xloc.bar_time, border_color = color.new(isBull ? color.teal : color.red, 40), bgcolor = isBull ? cBull : cBear, text = isBull ? "RB+" : "RB-", text_size = size.tiny, text_color = color.new(color.gray, 20), text_halign = text.align_left)
+    arr.push(RB.new(top, bot, isBull, bar_index, false, b))
+    if arr.size() > cap
+        RB old = arr.shift()
+        box.delete(old.bx)
+
+if not na(bearTop) and (na(lastBearT) or pivT != lastBearT)
+    lastBearT := pivT
+    addBlock(blocks, bearTop, bearBot, false, pivT, maxBlocks)
+if not na(bullTop) and (na(lastBullT) or pivT != lastBullT)
+    lastBullT := pivT
+    addBlock(blocks, bullTop, bullBot, true, pivT, maxBlocks)
+
+// Interactions with active blocks
+bool  bullRej = false
+bool  bearRej = false
+bool  bullMit = false   // bullish block broken -> short continuation
+bool  bearMit = false   // bearish block broken -> long continuation
+float bullRejStop = na
+float bearRejStop = na
+float bullMitStop = na
+float bearMitStop = na
+
+int nB = blocks.size()
+if nB > 0
+    for i = 0 to nB - 1
+        RB b = blocks.get(i)
+        if not b.mitigated
+            if bar_index > b.born
+                if b.bull
+                    if close < b.bot
+                        b.mitigated := true
+                        bullMit := true
+                        bullMitStop := na(bullMitStop) ? b.top : math.max(bullMitStop, b.top)
+                    else if low <= b.top and close > b.top
+                        bullRej := true
+                        float s = math.min(low, b.bot)
+                        bullRejStop := na(bullRejStop) ? s : math.min(bullRejStop, s)
+                else
+                    if close > b.top
+                        b.mitigated := true
+                        bearMit := true
+                        bearMitStop := na(bearMitStop) ? b.bot : math.min(bearMitStop, b.bot)
+                    else if high >= b.bot and close < b.bot
+                        bearRej := true
+                        float s = math.max(high, b.top)
+                        bearRejStop := na(bearRejStop) ? s : math.max(bearRejStop, s)
+            box.set_right(b.bx, time)
+            if b.mitigated
+                box.set_bgcolor(b.bx, cMit)
+                box.set_border_color(b.bx, color.new(color.gray, 60))
+                box.set_text(b.bx, "mitigated")
+
+// 10 AM open rejection (wick through the open, close back on the original side)
+bool tenRejLong  = not na(tenOpen) and bar_index > tenBar and low <= tenOpen and close > tenOpen and open > tenOpen
+bool tenRejShort = not na(tenOpen) and bar_index > tenBar and high >= tenOpen and close < tenOpen and open < tenOpen
+
+// ───────────────────────────── Targets / bias ─────────────────────────────
+// returns the closer of the current candidate and a new untaken level on the given side
+pick(float cur, string curN, float lvl, bool taken, string name, bool above) =>
+    bool side = above ? lvl > close : lvl < close
+    bool closer = na(cur) or (above ? lvl < cur : lvl > cur)
+    bool ok = not na(lvl) and not taken and side and closer
+    [ok ? lvl : cur, ok ? name : curN]
+
+float  upLvl  = na
+string upName = ""
+float  dnLvl  = na
+string dnName = ""
+if usePD
+    [u1, n1] = pick(upLvl, upName, pdh, pdhTaken, "PDH", true)
+    upLvl := u1, upName := n1
+    [d1, m1] = pick(dnLvl, dnName, pdl, pdlTaken, "PDL", false)
+    dnLvl := d1, dnName := m1
+if useON
+    [u2, n2] = pick(upLvl, upName, onh, onhTaken, "ONH", true)
+    upLvl := u2, upName := n2
+    [d2, m2] = pick(dnLvl, dnName, onl, onlTaken, "ONL", false)
+    dnLvl := d2, dnName := m2
+
+float dUp = na(upLvl) ? na : upLvl - close
+float dDn = na(dnLvl) ? na : close - dnLvl
+bool longBias  = biasMode == "Nearest untaken" ? (not na(dUp) and (na(dDn) or dUp <= dDn)) : not na(dUp)
+bool shortBias = biasMode == "Nearest untaken" ? (not na(dDn) and (na(dUp) or dDn < dUp)) : not na(dDn)
+
+// ───────────────────────────── Entries ─────────────────────────────
+bool waited   = not na(tenTime) and time - tenTime >= waitMin * 60000
+bool inTrade  = inS(tradeSess)
+bool inHold   = inS(holdSess)
+bool canTrade = inTrade and waited and manipOK and strategy.position_size == 0 and tradesToday < maxTrades and barstate.isconfirmed
+
+// pick signal + structural stop (priority: block rejection > 10 AM rejection > mitigation)
+float longStop = na
+string longWhy = ""
+if useRBRej and bullRej
+    longStop := bullRejStop, longWhy := "RB rejection"
+else if useTenRej and tenRejLong
+    longStop := low, longWhy := "10AM rejection"
+else if useMit and bearMit
+    longStop := bearMitStop, longWhy := "Mitigation"
+
+float shortStop = na
+string shortWhy = ""
+if useRBRej and bearRej
+    shortStop := bearRejStop, shortWhy := "RB rejection"
+else if useTenRej and tenRejShort
+    shortStop := high, shortWhy := "10AM rejection"
+else if useMit and bullMit
+    shortStop := bullMitStop, shortWhy := "Mitigation"
+
+longStop  := na(longStop)  ? na : longStop  - stopBufTk * tick
+shortStop := na(shortStop) ? na : shortStop + stopBufTk * tick
+
+float longRisk  = na(longStop)  ? na : close - longStop
+float shortRisk = na(shortStop) ? na : shortStop - close
+bool longOK  = canTrade and longBias  and not na(longRisk)  and longRisk > 0  and (maxStopPt == 0 or longRisk <= maxStopPt)  and (upLvl - close) / longRisk >= minRR
+bool shortOK = canTrade and shortBias and not na(shortRisk) and shortRisk > 0 and (maxStopPt == 0 or shortRisk <= maxStopPt) and (close - dnLvl) / shortRisk >= minRR
+
+var float activeStop = na
+var float activeTgt  = na
+
+if longOK
+    tradesToday += 1
+    activeStop := longStop, activeTgt := upLvl
+    strategy.entry("Long", strategy.long, comment = longWhy + " → " + upName)
+    strategy.exit("Long X", "Long", stop = longStop, limit = upLvl)
+    alert("10AM Open LONG (" + longWhy + ") target " + upName + " " + str.tostring(upLvl, format.mintick) + " stop " + str.tostring(longStop, format.mintick), alert.freq_once_per_bar_close)
+else if shortOK
+    tradesToday += 1
+    activeStop := shortStop, activeTgt := dnLvl
+    strategy.entry("Short", strategy.short, comment = shortWhy + " → " + dnName)
+    strategy.exit("Short X", "Short", stop = shortStop, limit = dnLvl)
+    alert("10AM Open SHORT (" + shortWhy + ") target " + dnName + " " + str.tostring(dnLvl, format.mintick) + " stop " + str.tostring(shortStop, format.mintick), alert.freq_once_per_bar_close)
+
+// flat outside the hold window
+if strategy.position_size != 0 and not inHold
+    strategy.close_all(comment = "Time exit")
+
+bool inPos = strategy.position_size != 0 or longOK or shortOK
+plot(inPos ? activeStop : na, "Stop", color.new(color.red, 0), 1, plot.style_linebr)
+plot(inPos ? activeTgt : na, "Target", color.new(color.green, 0), 1, plot.style_linebr)
+bgcolor(inTrade ? color.new(color.orange, 95) : na, title = "Trading window")
+
+// ───────────────────────────── Status table ─────────────────────────────
+var table tb = table.new(position.top_right, 2, 7, bgcolor = color.new(color.black, 20), border_width = 1)
+lvlTxt(float v, bool taken) =>
+    na(v) ? "—" : str.tostring(v, format.mintick) + (taken ? "  taken" : "  open")
+
+if showTb and barstate.islast
+    color tc = color.white
+    table.cell(tb, 0, 0, "10AM open", text_color = tc, text_size = size.small)
+    table.cell(tb, 1, 0, na(tenOpen) ? "—" : str.tostring(tenOpen, format.mintick) + (sweptUp ? " ↑" : "") + (sweptDn ? " ↓" : ""), text_color = tc, text_size = size.small)
+    table.cell(tb, 0, 1, "PDH", text_color = tc, text_size = size.small)
+    table.cell(tb, 1, 1, lvlTxt(pdh, pdhTaken), text_color = pdhTaken ? color.gray : color.lime, text_size = size.small)
+    table.cell(tb, 0, 2, "PDL", text_color = tc, text_size = size.small)
+    table.cell(tb, 1, 2, lvlTxt(pdl, pdlTaken), text_color = pdlTaken ? color.gray : color.lime, text_size = size.small)
+    table.cell(tb, 0, 3, "ONH", text_color = tc, text_size = size.small)
+    table.cell(tb, 1, 3, lvlTxt(onh, onhTaken), text_color = onhTaken ? color.gray : color.lime, text_size = size.small)
+    table.cell(tb, 0, 4, "ONL", text_color = tc, text_size = size.small)
+    table.cell(tb, 1, 4, lvlTxt(onl, onlTaken), text_color = onlTaken ? color.gray : color.lime, text_size = size.small)
+    table.cell(tb, 0, 5, "Bias", text_color = tc, text_size = size.small)
+    table.cell(tb, 1, 5, longBias ? "LONG → " + upName : shortBias ? "SHORT → " + dnName : "none", text_color = longBias ? color.lime : shortBias ? color.red : color.gray, text_size = size.small)
+    table.cell(tb, 0, 6, "Manipulated", text_color = tc, text_size = size.small)
+    table.cell(tb, 1, 6, manipOK ? "yes" : "waiting", text_color = manipOK ? color.lime : color.orange, text_size = size.small)
