@@ -6,8 +6,25 @@ A rules-based version of the "10 AM open" idea for Nasdaq futures, in two langua
 |---|---|---|
 | `ten_am_open_strategy.indie` | **Vela / TakeProfit** (Indicators code editor) | Indie |
 | `ten_am_open_strategy.pine` | TradingView (Pine Editor) | Pine Script v6 |
+| `TenAmOpenEA.mq5` | **Exness / MetaTrader 5 desktop** (automated) | MQL5 Expert Advisor |
 
 Paste the **code file** for your platform into its editor, not this README.
+
+### MT5 Expert Advisor (Exness)
+The EA trades the rules automatically on **USTEC** (the Nasdaq 100 CFD), M1 chart.
+The Exness web terminal can't run custom code, so use the MT5 desktop app.
+
+1. In MT5: **File → Open Data Folder → MQL5 → Experts**, and copy `TenAmOpenEA.mq5` there.
+2. Open **MetaEditor** (F4), open the file, and press **Compile** (F7). The result should show 0 errors.
+3. Back in MT5, open a **USTEC M1** chart and drag *TenAmOpenEA* from the Navigator onto it.
+   Tick **Allow Algo Trading**, and turn on the **Algo Trading** button in the toolbar.
+4. Backtest first: **View → Strategy Tester**, Expert = TenAmOpenEA, Symbol = USTEC, M1,
+   Model = "Every tick based on real ticks".
+
+Key inputs: `InpServerGmtOffset` (Exness server time is GMT+0), risk % per trade (default 0.5%),
+stop buffer, sweep distance and minimum wick size in **price units** (index points), and
+max spread. The EA replays the last 5,000 bars at start so the levels exist right away,
+closes trades at 15:55 New York, and only manages positions with its own magic number.
 
 ### Indie version (Vela / TakeProfit)
 - Plots the 10 AM open, PDH/PDL, and ONH/ONL. Levels turn grey once they're taken.
