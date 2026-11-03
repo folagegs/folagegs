@@ -201,7 +201,7 @@ bool manipOK = manipMode == "Off" ? true : manipMode == "Either side" ? (sweptUp
 // ───────────────────────────── Rejection blocks ─────────────────────────────
 // Bearish block: swing high whose upper wick is large vs. its body. Zone = wick high -> body top.
 // Bullish block: swing low whose lower wick is large vs. its body. Zone = body bottom -> wick low.
-// `off` = 1 shifts everything one bar back for non-repainting higher-timeframe requests.
+// off = 1 shifts everything one bar back for non-repainting higher-timeframe requests.
 rbDetect(int len, float ratio, float minWick, int off) =>
     float ph = ta.pivothigh(high[off], len, len)
     float pl = ta.pivotlow(low[off], len, len)
