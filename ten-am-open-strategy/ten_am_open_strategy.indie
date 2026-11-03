@@ -1,0 +1,622 @@
+# indie:lang_version = 5
+# 10 AM Open - Liquidity Draw Strategy (NQ / MNQ, 1-minute chart)
+#
+# Idea: skip the 09:30 opening chaos. Mark the 10:00 New York open, wait for
+# price to sweep one or both sides of it, check which draws on liquidity are
+# already taken, and trade toward the nearest one that is NOT taken, using
+# rejection blocks (or a rejection of the 10 AM open) for entries.
+#
+# Levels
+#   10AM      open of the first bar at/after 10:00 New York time
+#   PDH / PDL previous futures session high/low (18:00 -> 16:00 NY, not the calendar day)
+#   ONH / ONL overnight high/low (16:00 prior day -> 09:30 NY, post + pre-market)
+#   A level turns grey once price trades through it ("taken").
+#
+# Rejection blocks
+#   Bearish: swing high with a large upper wick vs. body. Zone = wick high -> body top.
+#   Bullish: swing low with a large lower wick vs. body.  Zone = body bottom -> wick low.
+#   Rejection = price trades into the zone and closes back out.
+#   Mitigation = a close through the far side (box turns grey) -> continuation signal.
+#
+# Signals and the built-in trade tally
+#   Entry at the signal bar close, stop beyond the block / wick + buffer, target =
+#   the untaken level. Exits: stop, target, or the hold-window end. The label on
+#   the last bar shows trades, win rate and net R. This is a simulation on chart
+#   data (no fees or slippage), not a broker backtest, and not financial advice.
+#
+# Use an extended-hours (ETH) chart so overnight and session levels can be built.
+# New York daylight saving time is handled in the code.
+
+from math import isnan, nan
+from datetime import datetime
+from indie import indicator, param, param_ref, plot, color, Color, MainContext, sec_context, MutSeriesF, Optional, TimeFrame
+from indie.algorithms import PivotHighLow
+from indie.drawings import Rectangle, LabelAbs, AbsolutePosition
+
+C_TEN = color.ORANGE
+C_PD = color.rgba(41, 98, 255, 1.0)
+C_ON = color.rgba(171, 71, 188, 1.0)
+C_TAKEN = color.rgba(120, 123, 134, 0.6)
+C_BULL_BOX = color.rgba(8, 153, 129, 0.25)
+C_BEAR_BOX = color.rgba(242, 54, 69, 0.25)
+C_BULL_LINE = color.rgba(8, 153, 129, 0.8)
+C_BEAR_LINE = color.rgba(242, 54, 69, 0.8)
+C_MIT_BOX = color.rgba(120, 123, 134, 0.15)
+C_MIT_LINE = color.rgba(120, 123, 134, 0.5)
+BS = 6   # block record: top, bottom, is_bull, born bar, mitigated, left time
+
+
+def days_from_civil(y: int, m: int, d: int) -> int:
+    yy = y
+    if m <= 2:
+        yy = y - 1
+    era = yy // 400
+    yoe = yy - era * 400
+    mp = m + 9
+    if m > 2:
+        mp = m - 3
+    doy = (153 * mp + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
+def ny_offset(t: float) -> int:
+    # seconds behind UTC: 4h during US daylight saving time, 5h otherwise
+    y = datetime.utcfromtimestamp(t).year
+    mar1 = days_from_civil(y, 3, 1)
+    second_sun_mar = mar1 + (7 - (mar1 + 4) % 7) % 7 + 7
+    nov1 = days_from_civil(y, 11, 1)
+    first_sun_nov = nov1 + (7 - (nov1 + 4) % 7) % 7
+    dst_start = second_sun_mar * 86400 + 7 * 3600
+    dst_end = first_sun_nov * 86400 + 6 * 3600
+    ti = int(t)
+    if ti >= dst_start and ti < dst_end:
+        return 4 * 3600
+    return 5 * 3600
+
+
+def hhmm_to_min(v: int) -> int:
+    return (v // 100) * 60 + v % 100
+
+
+def fut_in(m: int) -> bool:
+    return m >= 1080 or m < 960
+
+
+def on_in(m: int) -> bool:
+    return m >= 960 or m < 570
+
+
+def ten_in(m: int) -> bool:
+    return m >= 600 and m < 960
+
+
+# Pivot candles of the rejection-block timeframe, shifted one bar back so that
+# only closed bars are used (no repainting with lookahead=True).
+@sec_context
+@param_ref('swing')
+def SecPivots(self, swing):
+    ph, _ = PivotHighLow.new(self.high, swing, swing)
+    _, pl = PivotHighLow.new(self.low, swing, swing)
+    is_ph = MutSeriesF.new(0.0 if isnan(ph[0]) else 1.0)
+    is_pl = MutSeriesF.new(0.0 if isnan(pl[0]) else 1.0)
+    po = MutSeriesF.new(self.open[swing])
+    phi = MutSeriesF.new(self.high[swing])
+    plo = MutSeriesF.new(self.low[swing])
+    pc = MutSeriesF.new(self.close[swing])
+    pt = MutSeriesF.new(self.time[swing])
+    return is_ph[1], is_pl[1], po[1], phi[1], plo[1], pc[1], pt[1]
+
+
+@indicator('10AM Open Strategy', overlay_main_pane=True)
+@param.str('rb_tf', default='1m', options=['Chart', '1m', '3m', '5m', '15m'], title='Rejection block timeframe')
+@param.int('swing', default=3, min=1, max=20, title='Swing strength (bars each side)')
+@param.float('wick_ratio', default=1.5, min=0.1, max=20.0, title='Min wick-to-body ratio')
+@param.int('min_wick_ticks', default=4, min=0, max=500, title='Min wick size (ticks)')
+@param.int('max_blocks', default=12, min=1, max=40, title='Max blocks kept')
+@param.bool('show_blocks', default=True, title='Show rejection blocks')
+@param.str('manip_mode', default='Either side', options=['Off', 'Either side', 'Both sides'], title='Require sweep of 10AM open')
+@param.int('manip_ticks', default=8, min=0, max=1000, title='Min sweep beyond 10AM open (ticks)')
+@param.bool('use_pd', default=True, title='Target previous session H/L')
+@param.bool('use_on', default=True, title='Target overnight H/L')
+@param.str('bias_mode', default='Nearest untaken', options=['Nearest untaken', 'Any untaken in direction'], title='Direction rule')
+@param.int('wait_min', default=0, min=0, max=300, title='Wait N minutes after 10:00')
+@param.int('entry_end', default=1200, min=1001, max=1559, title='New entries until (HHMM, NY)')
+@param.int('hold_end', default=1555, min=1001, max=1600, title='Flat at (HHMM, NY)')
+@param.bool('use_rb_rej', default=True, title='Entry: rejection block rejection')
+@param.bool('use_ten_rej', default=True, title='Entry: rejection of the 10AM open')
+@param.bool('use_mit', default=True, title='Entry: full mitigation (continuation)')
+@param.int('stop_buf_ticks', default=4, min=0, max=500, title='Stop buffer (ticks)')
+@param.float('max_stop_pts', default=40.0, min=0.0, max=1000.0, title='Max stop distance (points, 0 = off)')
+@param.float('min_rr', default=1.5, min=0.1, max=20.0, title='Min reward:risk to target')
+@param.int('max_trades', default=2, min=1, max=20, title='Max trades per day')
+@param.bool('show_stats', default=True, title='Show status / results label')
+@plot.line(title='10AM Open', color=C_TEN, line_width=2)
+@plot.line(title='PDH', color=C_PD)
+@plot.line(title='PDL', color=C_PD)
+@plot.line(title='ONH', color=C_ON)
+@plot.line(title='ONL', color=C_ON)
+@plot.line(title='Stop', color=color.RED)
+@plot.line(title='Target', color=color.GREEN)
+@plot.marker(title='Long', color=color.GREEN, text='L', style=plot.marker_style.LABEL, position=plot.marker_position.BELOW)
+@plot.marker(title='Short', color=color.RED, text='S', style=plot.marker_style.LABEL, position=plot.marker_position.ABOVE)
+@plot.marker(title='Win exit', color=color.LIME, style=plot.marker_style.CROSS, position=plot.marker_position.CENTER)
+@plot.marker(title='Loss exit', color=color.RED, style=plot.marker_style.CROSS, position=plot.marker_position.CENTER)
+class Main(MainContext):
+    def __init__(self, rb_tf):
+        self._use_sec = False
+        tf = self.time_frame
+        if rb_tf != 'Chart':
+            req = TimeFrame.from_str(rb_tf)
+            if self.time_frame < req:
+                self._use_sec = True
+                tf = req
+        self._s_ph, self._s_pl, self._s_o, self._s_h, self._s_l, self._s_c, self._s_t = self.calc_on(SecPivots, time_frame=tf, lookahead=True)
+
+        empty_f: list[float] = []
+        empty_r: list[Optional[Rectangle]] = []
+        empty_l: list[Optional[LabelAbs]] = []
+        self._blocks = self.new_var(empty_f)
+        self._rects = self.new_var(empty_r)
+        self._labels = self.new_var(empty_l)
+        self._last_bear_t = self.new_var(-1.0)
+        self._last_bull_t = self.new_var(-1.0)
+
+        # previous futures session
+        self._fut_td = self.new_var(-1)
+        self._sess_h = self.new_var(nan)
+        self._sess_l = self.new_var(nan)
+        self._pdh = self.new_var(nan)
+        self._pdl = self.new_var(nan)
+        self._pdh_tk = self.new_var(False)
+        self._pdl_tk = self.new_var(False)
+
+        # overnight
+        self._on_acc_h = self.new_var(nan)
+        self._on_acc_l = self.new_var(nan)
+        self._onh = self.new_var(nan)
+        self._onl = self.new_var(nan)
+        self._onh_tk = self.new_var(False)
+        self._onl_tk = self.new_var(False)
+
+        # 10 AM open
+        self._ten = self.new_var(nan)
+        self._ten_bar = self.new_var(-1)
+        self._ten_day = self.new_var(-1)
+        self._sw_up = self.new_var(False)
+        self._sw_dn = self.new_var(False)
+        self._trades_today = self.new_var(0)
+
+        # simulated trade + results
+        self._pos = self.new_var(0)
+        self._entry = self.new_var(nan)
+        self._stop = self.new_var(nan)
+        self._tgt = self.new_var(nan)
+        self._n_tr = self.new_var(0)
+        self._n_win = self.new_var(0)
+        self._sum_r = self.new_var(0.0)
+
+    def _add_block(self, blocks: list[float], rects: list[Optional[Rectangle]], top: float, bot: float,
+                   bull: bool, t_left: float, t_end: float, show: bool) -> bool:
+        blocks.append(top)
+        blocks.append(bot)
+        blocks.append(1.0 if bull else 0.0)
+        blocks.append(float(self.bar_index))
+        blocks.append(0.0)
+        blocks.append(t_left)
+        if show:
+            c_box: Color = C_BULL_BOX if bull else C_BEAR_BOX
+            c_line: Color = C_BULL_LINE if bull else C_BEAR_LINE
+            rect: Rectangle = Rectangle(AbsolutePosition(t_left, top), AbsolutePosition(t_end, bot),
+                                        line_color=c_line, line_width=1, bg_color=c_box)
+            self.chart.draw(rect)
+            rects.append(rect)
+        else:
+            none_r: Optional[Rectangle] = None
+            rects.append(none_r)
+        return True
+
+    def _mitigate(self, rects: list[Optional[Rectangle]], i: int, t_left: float, top: float, bot: float,
+                  t_now: float, show: bool) -> bool:
+        if not show:
+            return True
+        old = rects[i]
+        if old is not None:
+            self.chart.erase(old.value())
+        rect: Rectangle = Rectangle(AbsolutePosition(t_left, top), AbsolutePosition(t_now, bot),
+                                    line_color=C_MIT_LINE, line_width=1, bg_color=C_MIT_BOX)
+        self.chart.draw(rect)
+        rects[i] = rect
+        return True
+
+    def _label(self, labels: list[Optional[LabelAbs]], text: str, t: float, price: float, col: Color) -> bool:
+        lab: LabelAbs = LabelAbs(text, AbsolutePosition(t, price), bg_color=color.TRANSPARENT, text_color=col, font_size=11)
+        self.chart.draw(lab)
+        labels.append(lab)
+        return True
+
+    def calc(self, swing, wick_ratio, min_wick_ticks, max_blocks, show_blocks, manip_mode, manip_ticks,
+             use_pd, use_on, bias_mode, wait_min, entry_end, hold_end, use_rb_rej, use_ten_rej, use_mit,
+             stop_buf_ticks, max_stop_pts, min_rr, max_trades, show_stats):
+        tick = self.info.tick_size
+        n = self.bar_index
+        op = self.open[0]
+        hi = self.high[0]
+        lo = self.low[0]
+        cl = self.close[0]
+        t0 = self.time[0]
+
+        off0 = ny_offset(t0)
+        loc0 = int(t0) - off0
+        m0 = (loc0 % 86400) // 60
+        day0 = loc0 // 86400
+        td0 = (loc0 + 21600) // 86400   # futures trading day: 18:00 starts the next day
+        m1 = -1
+        day1 = -1
+        if n > 0:
+            t1 = self.time[1]
+            loc1 = int(t1) - ny_offset(t1)
+            m1 = (loc1 % 86400) // 60
+            day1 = loc1 // 86400
+
+        # session-end time (16:00 NY) used to project block boxes
+        t_end = float(day0 * 86400 + 960 * 60 + off0)
+        if m0 >= 960:
+            t_end = t_end + 86400.0
+
+        # ---------------- previous futures session H/L ----------------
+        if fut_in(m0):
+            if td0 != self._fut_td.get():
+                if not isnan(self._sess_h.get()):
+                    self._pdh.set(self._sess_h.get())
+                    self._pdl.set(self._sess_l.get())
+                    self._pdh_tk.set(False)
+                    self._pdl_tk.set(False)
+                self._fut_td.set(td0)
+                self._sess_h.set(hi)
+                self._sess_l.set(lo)
+            else:
+                self._sess_h.set(max(self._sess_h.get(), hi))
+                self._sess_l.set(min(self._sess_l.get(), lo))
+
+        pdh = self._pdh.get()
+        pdl = self._pdl.get()
+        if not isnan(pdh) and not self._pdh_tk.get() and hi >= pdh:
+            self._pdh_tk.set(True)
+        if not isnan(pdl) and not self._pdl_tk.get() and lo <= pdl:
+            self._pdl_tk.set(True)
+
+        # ---------------- overnight H/L ----------------
+        on0 = on_in(m0)
+        on1 = m1 >= 0 and on_in(m1)
+        if on0 and not on1:
+            self._on_acc_h.set(hi)
+            self._on_acc_l.set(lo)
+            self._onh.set(nan)
+            self._onl.set(nan)
+        elif on0:
+            self._on_acc_h.set(max(self._on_acc_h.get(), hi))
+            self._on_acc_l.set(min(self._on_acc_l.get(), lo))
+        elif on1 and not isnan(self._on_acc_h.get()):
+            self._onh.set(self._on_acc_h.get())
+            self._onl.set(self._on_acc_l.get())
+            self._onh_tk.set(False)
+            self._onl_tk.set(False)
+
+        onh = self._onh.get()
+        onl = self._onl.get()
+        if not isnan(onh) and not self._onh_tk.get() and hi >= onh:
+            self._onh_tk.set(True)
+        if not isnan(onl) and not self._onl_tk.get() and lo <= onl:
+            self._onl_tk.set(True)
+
+        # ---------------- 10 AM open + manipulation ----------------
+        ten0 = ten_in(m0)
+        ten1 = m1 >= 0 and ten_in(m1) and day1 == day0
+        if ten0 and not ten1:
+            self._ten.set(op)
+            self._ten_bar.set(n)
+            self._ten_day.set(day0)
+            self._sw_up.set(False)
+            self._sw_dn.set(False)
+            self._trades_today.set(0)
+
+        ten = self._ten.get()
+        ten_today = ten0 and self._ten_day.get() == day0 and not isnan(ten)
+        if ten_today:
+            if hi >= ten + manip_ticks * tick:
+                self._sw_up.set(True)
+            if lo <= ten - manip_ticks * tick:
+                self._sw_dn.set(True)
+        manip_ok = True
+        if manip_mode == 'Either side':
+            manip_ok = self._sw_up.get() or self._sw_dn.get()
+        elif manip_mode == 'Both sides':
+            manip_ok = self._sw_up.get() and self._sw_dn.get()
+
+        # ---------------- rejection blocks ----------------
+        ph, _ = PivotHighLow.new(self.high, swing, swing)
+        _, pl = PivotHighLow.new(self.low, swing, swing)
+
+        is_ph = not isnan(ph[0])
+        is_pl = not isnan(pl[0])
+        p_o = self.open[swing]
+        p_h = self.high[swing]
+        p_l = self.low[swing]
+        p_c = self.close[swing]
+        p_t = self.time[swing]
+        if self._use_sec:
+            is_ph = self._s_ph[0] == 1.0
+            is_pl = self._s_pl[0] == 1.0
+            p_o = self._s_o[0]
+            p_h = self._s_h[0]
+            p_l = self._s_l[0]
+            p_c = self._s_c[0]
+            p_t = self._s_t[0]
+
+        blocks: list[float] = []
+        src_b = self._blocks.get()
+        k = 0
+        while k < len(src_b):
+            blocks.append(src_b[k])
+            k += 1
+        rects: list[Optional[Rectangle]] = []
+        src_r = self._rects.get()
+        k = 0
+        while k < len(src_r):
+            rects.append(src_r[k])
+            k += 1
+
+        min_wick = min_wick_ticks * tick
+        if not isnan(p_o) and not isnan(p_t):
+            body = max(abs(p_c - p_o), tick)
+            up_w = p_h - max(p_o, p_c)
+            dn_w = min(p_o, p_c) - p_l
+            if is_ph and up_w / body >= wick_ratio and up_w >= min_wick and p_t != self._last_bear_t.get():
+                self._last_bear_t.set(p_t)
+                self._add_block(blocks, rects, p_h, max(p_o, p_c), False, p_t, t_end, show_blocks)
+            if is_pl and dn_w / body >= wick_ratio and dn_w >= min_wick and p_t != self._last_bull_t.get():
+                self._last_bull_t.set(p_t)
+                self._add_block(blocks, rects, min(p_o, p_c), p_l, True, p_t, t_end, show_blocks)
+
+        while len(rects) > max_blocks:
+            old = rects[0]
+            if old is not None:
+                self.chart.erase(old.value())
+            rects.pop(0)
+            j = 0
+            while j < BS:
+                blocks.pop(0)
+                j += 1
+
+        bull_rej = False
+        bear_rej = False
+        bull_mit = False   # bullish block broken -> short continuation
+        bear_mit = False   # bearish block broken -> long continuation
+        bull_rej_stop = nan
+        bear_rej_stop = nan
+        bull_mit_stop = nan
+        bear_mit_stop = nan
+        nb = len(blocks) // BS
+        i = 0
+        while i < nb:
+            b = i * BS
+            top = blocks[b]
+            bot = blocks[b + 1]
+            bull = blocks[b + 2] == 1.0
+            born = int(blocks[b + 3])
+            mit = blocks[b + 4] == 1.0
+            t_left = blocks[b + 5]
+            if (not mit) and born < n:
+                if bull:
+                    if cl < bot:
+                        blocks[b + 4] = 1.0
+                        bull_mit = True
+                        bull_mit_stop = top if isnan(bull_mit_stop) else max(bull_mit_stop, top)
+                        self._mitigate(rects, i, t_left, top, bot, t0, show_blocks)
+                    elif lo <= top and cl > top:
+                        bull_rej = True
+                        s_l = min(lo, bot)
+                        bull_rej_stop = s_l if isnan(bull_rej_stop) else min(bull_rej_stop, s_l)
+                else:
+                    if cl > top:
+                        blocks[b + 4] = 1.0
+                        bear_mit = True
+                        bear_mit_stop = bot if isnan(bear_mit_stop) else min(bear_mit_stop, bot)
+                        self._mitigate(rects, i, t_left, top, bot, t0, show_blocks)
+                    elif hi >= bot and cl < bot:
+                        bear_rej = True
+                        s_h = max(hi, top)
+                        bear_rej_stop = s_h if isnan(bear_rej_stop) else max(bear_rej_stop, s_h)
+            i += 1
+
+        self._blocks.set(blocks)
+        self._rects.set(rects)
+
+        # ---------------- targets / bias ----------------
+        lv_p: list[float] = []
+        lv_n: list[str] = []
+        if use_pd:
+            if not isnan(pdh) and not self._pdh_tk.get():
+                lv_p.append(pdh)
+                lv_n.append('PDH')
+            if not isnan(pdl) and not self._pdl_tk.get():
+                lv_p.append(pdl)
+                lv_n.append('PDL')
+        if use_on:
+            if not isnan(onh) and not self._onh_tk.get():
+                lv_p.append(onh)
+                lv_n.append('ONH')
+            if not isnan(onl) and not self._onl_tk.get():
+                lv_p.append(onl)
+                lv_n.append('ONL')
+        up_lvl = nan
+        up_name = ''
+        dn_lvl = nan
+        dn_name = ''
+        k = 0
+        while k < len(lv_p):
+            p = lv_p[k]
+            if p > cl and (isnan(up_lvl) or p < up_lvl):
+                up_lvl = p
+                up_name = lv_n[k]
+            if p < cl and (isnan(dn_lvl) or p > dn_lvl):
+                dn_lvl = p
+                dn_name = lv_n[k]
+            k += 1
+
+        long_bias = False
+        short_bias = False
+        if bias_mode == 'Nearest untaken':
+            if not isnan(up_lvl) and (isnan(dn_lvl) or up_lvl - cl <= cl - dn_lvl):
+                long_bias = True
+            elif not isnan(dn_lvl):
+                short_bias = True
+        else:
+            long_bias = not isnan(up_lvl)
+            short_bias = not isnan(dn_lvl)
+
+        # ---------------- manage the open simulated trade ----------------
+        win_mark = nan
+        loss_mark = nan
+        hold_end_m = hhmm_to_min(hold_end)
+        pos = self._pos.get()
+        if pos != 0:
+            entry = self._entry.get()
+            stop = self._stop.get()
+            tgt = self._tgt.get()
+            risk = abs(entry - stop)
+            exit_px = nan
+            if pos == 1:
+                if lo <= stop:
+                    exit_px = stop
+                elif hi >= tgt:
+                    exit_px = tgt
+            else:
+                if hi >= stop:
+                    exit_px = stop
+                elif lo <= tgt:
+                    exit_px = tgt
+            if isnan(exit_px) and not (m0 >= 570 and m0 < hold_end_m):
+                exit_px = cl
+            if not isnan(exit_px):
+                r = (exit_px - entry) / risk if pos == 1 else (entry - exit_px) / risk
+                self._n_tr.set(self._n_tr.get() + 1)
+                self._sum_r.set(self._sum_r.get() + r)
+                if r > 0:
+                    self._n_win.set(self._n_win.get() + 1)
+                    win_mark = exit_px
+                else:
+                    loss_mark = exit_px
+                self._pos.set(0)
+
+        # ---------------- new entries ----------------
+        long_mark = nan
+        short_mark = nan
+        entry_end_m = hhmm_to_min(entry_end)
+        can_trade = (ten_today and n > self._ten_bar.get() and m0 >= 600 + wait_min and m0 < entry_end_m
+                     and manip_ok and self._pos.get() == 0 and isnan(win_mark) and isnan(loss_mark)
+                     and self._trades_today.get() < max_trades)
+
+        long_stop = nan
+        if use_rb_rej and bull_rej:
+            long_stop = bull_rej_stop
+        elif use_ten_rej and ten_today and lo <= ten and cl > ten and op > ten:
+            long_stop = lo
+        elif use_mit and bear_mit:
+            long_stop = bear_mit_stop
+        short_stop = nan
+        if use_rb_rej and bear_rej:
+            short_stop = bear_rej_stop
+        elif use_ten_rej and ten_today and hi >= ten and cl < ten and op < ten:
+            short_stop = hi
+        elif use_mit and bull_mit:
+            short_stop = bull_mit_stop
+
+        if can_trade and long_bias and not isnan(long_stop):
+            stop_px = long_stop - stop_buf_ticks * tick
+            risk_l = cl - stop_px
+            if risk_l > 0 and (max_stop_pts == 0.0 or risk_l <= max_stop_pts) and (up_lvl - cl) / risk_l >= min_rr:
+                self._pos.set(1)
+                self._entry.set(cl)
+                self._stop.set(stop_px)
+                self._tgt.set(up_lvl)
+                self._trades_today.set(self._trades_today.get() + 1)
+                long_mark = lo
+        if isnan(long_mark) and can_trade and short_bias and not isnan(short_stop):
+            stop_px = short_stop + stop_buf_ticks * tick
+            risk_s = stop_px - cl
+            if risk_s > 0 and (max_stop_pts == 0.0 or risk_s <= max_stop_pts) and (cl - dn_lvl) / risk_s >= min_rr:
+                self._pos.set(-1)
+                self._entry.set(cl)
+                self._stop.set(stop_px)
+                self._tgt.set(dn_lvl)
+                self._trades_today.set(self._trades_today.get() + 1)
+                short_mark = hi
+
+        in_pos = self._pos.get() != 0
+        stop_line = self._stop.get() if in_pos else nan
+        tgt_line = self._tgt.get() if in_pos else nan
+
+        # ---------------- level plots ----------------
+        ten_v = ten if ten_today else nan
+        pd_vis = fut_in(m0)
+        on_vis = m0 >= 570 and m0 < 960
+        pdh_v = pdh if pd_vis else nan
+        pdl_v = pdl if pd_vis else nan
+        onh_v = onh if on_vis else nan
+        onl_v = onl if on_vis else nan
+        c_pdh: Color = C_TAKEN if self._pdh_tk.get() else C_PD
+        c_pdl: Color = C_TAKEN if self._pdl_tk.get() else C_PD
+        c_onh: Color = C_TAKEN if self._onh_tk.get() else C_ON
+        c_onl: Color = C_TAKEN if self._onl_tk.get() else C_ON
+
+        # ---------------- labels on the last bar ----------------
+        if self.is_last_bar:
+            old_l = self._labels.get()
+            k = 0
+            while k < len(old_l):
+                ol = old_l[k]
+                if ol is not None:
+                    self.chart.erase(ol.value())
+                k += 1
+            labels: list[Optional[LabelAbs]] = []
+            if not isnan(ten_v):
+                self._label(labels, '10AM', t0, ten_v, C_TEN)
+            if not isnan(pdh_v):
+                self._label(labels, 'PDH' + (' (taken)' if self._pdh_tk.get() else ''), t0, pdh_v, c_pdh)
+            if not isnan(pdl_v):
+                self._label(labels, 'PDL' + (' (taken)' if self._pdl_tk.get() else ''), t0, pdl_v, c_pdl)
+            if not isnan(onh_v):
+                self._label(labels, 'ONH' + (' (taken)' if self._onh_tk.get() else ''), t0, onh_v, c_onh)
+            if not isnan(onl_v):
+                self._label(labels, 'ONL' + (' (taken)' if self._onl_tk.get() else ''), t0, onl_v, c_onl)
+            if show_stats:
+                bias_txt = 'none'
+                if long_bias:
+                    bias_txt = 'LONG -> ' + up_name
+                elif short_bias:
+                    bias_txt = 'SHORT -> ' + dn_name
+                n_tr = self._n_tr.get()
+                win_pct = 0.0
+                if n_tr > 0:
+                    win_pct = 100.0 * float(self._n_win.get()) / float(n_tr)
+                txt = ('Bias: ' + bias_txt + ' | Sweep: ' + ('yes' if manip_ok else 'waiting') +
+                       '\nTrades: ' + str(n_tr) + ' | Win: ' + str(round(win_pct, 1)) + '%' +
+                       ' | Net R: ' + str(round(self._sum_r.get(), 2)))
+                self._label(labels, txt, t0, hi + 40.0 * tick, color.WHITE)
+            self._labels.set(labels)
+
+        return (
+            ten_v,
+            plot.Line(pdh_v, color=c_pdh),
+            plot.Line(pdl_v, color=c_pdl),
+            plot.Line(onh_v, color=c_onh),
+            plot.Line(onl_v, color=c_onl),
+            stop_line,
+            tgt_line,
+            long_mark,
+            short_mark,
+            win_mark,
+            loss_mark,
+        )

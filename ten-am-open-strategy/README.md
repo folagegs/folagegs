@@ -1,8 +1,24 @@
 # 10 AM Open – Liquidity Draw Strategy (NQ / MNQ)
 
-A rules-based version of the "10 AM open" idea for Nasdaq futures, written as a
-TradingView **Pine Script v6 strategy** (`ten_am_open_strategy.pine`) so it can be
-backtested, not just looked at.
+A rules-based version of the "10 AM open" idea for Nasdaq futures, in two languages:
+
+| File | Platform | Language |
+|---|---|---|
+| `ten_am_open_strategy.indie` | **Vela / TakeProfit** (Indicators code editor) | Indie |
+| `ten_am_open_strategy.pine` | TradingView (Pine Editor) | Pine Script v6 |
+
+Paste the **code file** for your platform into its editor, not this README.
+
+### Indie version (Vela / TakeProfit)
+- Plots the 10 AM open, PDH/PDL, and ONH/ONL. Levels turn grey once they're taken.
+- Draws rejection blocks as boxes, which turn grey when mitigated. The block
+  timeframe can be the chart, 1m, 3m, 5m or 15m.
+- Marks entries (`L` / `S`) and exits (win / loss crosses), and plots the active stop and target.
+- A label on the last bar shows the current bias, whether the 10 AM open has been
+  swept, and a running tally of the simulated trades: count, win rate and net R.
+  The tally has no fees or slippage, so it is not a broker backtest.
+- Alerts: create a platform alert on the "Long" or "Short" marker plot.
+- Indie has no color inputs, so colors are fixed in the code.
 
 > This is built around the core concept, not any creator's exact system.
 > Nothing here is financial advice, and the defaults have not been
